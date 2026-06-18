@@ -22,7 +22,7 @@ AGENT_ID = ""
 for line in open(CRED_FILE):
     line = line.strip()
     if line.startswith("apiKey="):
-        API_KEY = line.split("=", 1)[1]
+        API_KEY = ***"=", 1)[1]
     elif line.startswith("agentId="):
         AGENT_ID = line.split("=", 1)[1]
 
@@ -143,7 +143,6 @@ def fetch_opponent_stats(agent_id):
     return opponents["opponents"][agent_id]
 
 def get_opponent_style(agent_id):
-    """Get opponent style — use VPIP/PFR stats if label is unknown."""
     try:
         opp = fetch_opponent_stats(agent_id)
         stats = opp.get("stats", {}) or {}
@@ -156,42 +155,24 @@ def get_opponent_style(agent_id):
             "tight-passive": "Nit",
             "tight-weak": "Weak-Tight",
         }
-        mapped = mapping.get(style, style if style != "unknown" else "unknown")
-        
-        # If style is unknown, try to classify from stats
-        if mapped == "unknown":
-            from poker_quant import classify_from_stats
-            vpip = stats.get("vpip", 0) or 0
-            pfr = stats.get("pfr", 0) or 0
-            af = stats.get("aggressionFactor", 0) or 0
-            mapped = classify_from_stats(vpip, pfr, af)
-        
-        return mapped
+        return mapping.get(style, style if style != "unknown" else "unknown")
     except Exception:
         return "unknown"
 
 # ── Strategy Engine ─────────────────────────────────────
 # Import quantitative poker engine
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from poker_quant import (
-    quant_decision, preflop_equity, monte_carlo_equity,
-    preflop_hand_key, hand_tier, is_premium_hand,
-    classify_board_texture, exploitation_adjustment,
-    classify_from_stats, hand_in_range as quant_hand_in_range,
-    get_fold_equity, tournament_phase, is_near_bubble,
-    icm_tighten_factor, effective_bb_over_time,
-    postflop_decision, estimate_draw_equity,
-)
+from poker_quant import quant_decision, preflop_equity, monte_carlo_equity
 
-# ── Tightened Preflop Ranges (VPIP ~25-30%) ──
-# UTG: ~15%, HJ: ~20%, CO: ~25%, BTN: ~30%, SB: ~25%, BB: ~10% (defending)
+# Ranges kept as fallback / opponent-quality filter
+# (TIGHTENED from original)
 PREFLOP_OPEN = {
-    0: {"pairs": 9, "high": ["AK", "AQ"], "suited": ["AK", "AQ", "AJs"]},                        # UTG ~15%
-    1: {"pairs": 8, "high": ["AK", "AQ", "AJ"], "suited": ["AK", "AQ", "AJ", "ATs", "KQ"]},       # HJ ~20%
-    2: {"pairs": 6, "high": ["AK", "AQ", "AJ", "AT", "KQ"], "suited": ["AK", "AQ", "AJ", "ATs", "A9s", "KQ", "KJs", "QJs"]},  # CO ~25%
-    3: {"pairs": 3, "high": ["AK", "AQ", "AJ", "AT", "A9", "KQ", "KJ"], "suited": ["AK", "AQ", "AJs", "ATs", "A9s", "A8s", "A7s", "A6s", "A5s", "KQ", "KJs", "QTs", "JTs", "T9s"]},  # BTN ~30%
-    4: {"pairs": 7, "high": ["AK", "AQ", "AJ", "A9", "KQ", "KJ"], "suited": ["AK", "AQ", "AJs", "ATs", "KQ", "KJs"]},   # SB ~25%
-    5: {"pairs": 5, "high": ["AK", "AQ"], "suited": ["AK", "AQ", "AJs", "ATs", "KQs"]},           # BB ~10% (defending)
+    0: {"pairs": 10, "high": ["AK", "AQ"], "suited": ["AK", "AQ", "AJ"]},
+    1: {"pairs": 8, "high": ["AK", "AQ", "AJ", "KQ"], "suited": ["AK", "AQ", "AJ", "AT", "KQ"]},
+    2: {"pairs": 6, "high": ["AK", "AQ", "AJ", "AT", "KQ", "KJ"], "suited": ["AK", "AQ", "AJ", "AT", "A9", "KQ", "KJ", "QJ", "JT"]},
+    3: {"pairs": 2, "high": ["AK", "AQ", "AJ", "AT", "A9", "KQ", "KJ", "KT", "QJ"], "suited": ["AK", "AQ", "AJ", "AT", "A9", "A8", "A7", "A6", "A5", "A4", "A3", "A2", "KQ", "KJ", "KT", "K9", "QJ", "QT", "Q9", "JT", "J9", "T9", "98", "87"]},
+    4: {"pairs": 10, "high": ["AK", "AQ"], "suited": ["AK", "AQ", "KQ", "KJ"]},
+    5: {"pairs": 4, "high": ["AK", "AQ", "AJ", "AT", "A9", "KQ", "KJ", "KT"], "suited": ["AK", "AQ", "AJ", "AT", "A9", "A8", "A7", "A6", "A5", "A4", "A3", "A2", "KQ", "KJ", "KT", "K9", "QJ", "QT", "Q9", "JT", "J9", "T9", "T8", "98"]},
 }
 
 def parse_card(card_str):
@@ -227,7 +208,7 @@ def high_card_ranks(hole_cards):
     return (max(r1, r2), min(r1, r2))
 
 def hand_in_range(hole_cards, pos_idx):
-    """Check if hole cards are in our tightened pre-flop open range for position."""
+    """Check if hole cards are in our pre-flop open range for position."""
     rng = PREFLOP_OPEN[pos_idx]
     pr = pair_rank(hole_cards)
     
@@ -242,9 +223,7 @@ def hand_in_range(hole_cards, pos_idx):
     loc = rank_to_char.get(lo, '')
     hand_str = hic + loc
     
-    # Note: high list stores "AK", "AQ" etc (offsuit broadway)
-    # suited list stores "AKs", "AQs" etc (suited broadway)
-    if suited and hand_str + 's' in rng.get("suited", []):
+    if suited and hand_str in rng.get("suited", []):
         return True
     if not suited and hand_str in rng.get("high", []):
         return True
@@ -264,55 +243,30 @@ def board_straight_draw(board):
 
 def classify_board(board):
     """Classify board texture: dry, wet, paired, ace_high, connected_low."""
-    return classify_board_texture(board)
+    if not board:
+        return "preflop"
+    
+    ranks = [card_rank_value(c[0].upper()) for c in board]
+    paired = len(ranks) != len(set(ranks))
+    ace_high = 14 in ranks
+    has_fd = board_has_flush_draw(board)
+    has_sd = board_straight_draw(board)
+    all_low = all(r <= 7 for r in ranks)
+    
+    if paired:
+        return "paired"
+    if has_fd and has_sd:
+        return "wet"
+    if has_fd or has_sd:
+        return "wet"
+    if ace_high and not has_fd and not has_sd:
+        return "ace_high"
+    if all_low and len(board) >= 3:
+        return "connected_low"
+    return "dry"
 
-# ── Hand State Tracker ──
-# Track per-hand state: did we raise preflop, previous street actions
-_hand_state = {}
-
-def reset_hand_state():
-    global _hand_state
-    _hand_state = {
-        'raised_preflop': False,
-        'prev_action': 'check',
-        'prev_equity': 0,
-        'street': 'preflop',
-    }
-
-def update_hand_state(action, equity=0, street=None):
-    global _hand_state
-    if street:
-        _hand_state['prev_action'] = _hand_state.get('street_action', 'check')
-        _hand_state['prev_equity'] = _hand_state.get('equity', 0)
-        _hand_state['street'] = street
-        _hand_state['street_action'] = action
-        _hand_state['equity'] = equity
-    if action in ('bet', 'raise') and _hand_state['street'] in ('PreDeal', 'Preflop'):
-        _hand_state['raised_preflop'] = True
-    _hand_state['last_action'] = action
-
-def get_hand_state():
-    return _hand_state
-
-# ── Opponent Stats Tracker ──
-_opponent_stats_cache = {}
-
-def get_opponent_stats(agent_id):
-    """Fetch and return raw stats dict for an opponent."""
-    if agent_id in _opponent_stats_cache:
-        return _opponent_stats_cache[agent_id]
-    try:
-        opp = fetch_opponent_stats(agent_id)
-        stats = opp.get("stats", {}) or {}
-        _opponent_stats_cache[agent_id] = stats
-        return stats
-    except:
-        return {}
-
-# ── Choose Preflop Action (Tightened) ──
 def choose_preflop_action(state):
-    """Decide pre-flop action: fold, call, bet, raise, all-in.
-    Uses tightened ranges (~25-30% VPIP)."""
+    """Decide pre-flop action: fold, call, bet, raise, all-in."""
     hole_cards = state.get("hole_cards", [])
     pos = state.get("position", 3)  # default BTN if unknown
     allowed = state.get("allowed_actions", [])
@@ -320,92 +274,60 @@ def choose_preflop_action(state):
     current_bet = state.get("current_bet", 0)
     stack = state.get("stack", 0)
     pot = state.get("pot", 0)
-    opponent_style = state.get("opponent_style", "unknown")
     
     in_range = hand_in_range(hole_cards, pos) if hole_cards else False
     pr = pair_rank(hole_cards)
     suited = is_suited(hole_cards)
     hi, lo = high_card_ranks(hole_cards) if hole_cards else (0, 0)
     
-    # Use quant engine's hand tier
-    key = preflop_hand_key(hole_cards) if hole_cards else '??'
-    tier = hand_tier(hole_cards) if hole_cards else 'trash'
-    
-    exploit = exploitation_adjustment(opponent_style, tier, pos >= 3)
-    exploit_notes = exploit.get('notes', [])
-    
-    in_position = pos >= 3  # CO/BTN are IP
     message = "let's see what develops"
     
-    # ── FACING A RAISE ──
+    # Facing a raise (need to call or 3-bet)
+    # PREMIUM: never fold JJ+ or AK to a single raise in 6-max
     is_premium = pr >= 11 or (hi == 14 and lo >= 13)  # JJ+ or AK
-    
     if call_amount > 0 and "call" in allowed:
-        if tier == 'premium':
-            # 3-bet premiums (QQ+), 4-bet KK+
+        if is_premium:
+            # 3-bet premiums, 4-bet KK+ if possible
             if pr >= 13:  # KK+
                 if "raise" in allowed:
                     raise_to = min(current_bet * 4, stack)
-                    return ("raise", raise_to, "4-betting with a monster")
-                return ("call", call_amount, "trapping premium")
-            # QQ, JJ, AK: 3-bet for value
+                    return ("raise", raise_to, "putting in the 4-bet with a monster")
+                return ("call", call_amount, "trapping")
             if "raise" in allowed:
                 raise_to = min(current_bet * 3, stack)
                 return ("raise", raise_to, "3-betting for value")
             if "all-in" in allowed and stack < current_bet * 5:
                 return ("all-in", stack, "short stack, getting it in good")
-            return ("call", call_amount, "flatting premium IP")
-        
-        if tier == 'strong':
-            # TT/AQs etc: call IP, fold OOP to tight opponents
-            if 'fold_to_raises' in exploit_notes:
-                if "fold" in allowed:
-                    return ("fold", 0, f"fold — {key} vs {opponent_style}")
-            if in_position:
-                return ("call", call_amount, f"flat strong — {key} IP")
-            if "fold" in allowed:
-                return ("fold", 0, f"fold OOP — {key}")
-            return ("call", call_amount, f"forced call — {key}")
-        
-        # Vs Nit: fold to raises (they have it)
-        if 'fold_to_raises' in exploit_notes:
-            if "fold" in allowed:
-                return ("fold", 0, f"respect {opponent_style}'s raise")
+            return ("call", call_amount, "flatting premium")
         
         if not in_range:
             if "fold" in allowed:
                 return ("fold", 0, "not the spot I'm looking for")
             return ("call", call_amount, "defending light")
         
-        # Only very cheap speculative calls
-        if call_amount <= pot * 0.1 and (suited or pr >= 7):
+        # Speculative: call if cheap
+        if call_amount <= pot * 0.15 and (suited or pr >= 7):
             return ("call", call_amount, "priced in with implied odds")
         
         if "fold" in allowed:
-            return ("fold", 0, "too much to see a flop")
+            return ("fold", 0, "too much to see a flop here")
         return ("call", call_amount, "price is right")
     
-    # ── NO RAISE FACING US — OPEN ──
+    # No raise facing us — we can open or check
     if "bet" in allowed and in_range:
-        # Proper sizing: 3x in position, 4x OOP
-        if tier in ('premium', 'strong'):
-            bet_size = int(pot * 0.9) if tier == 'premium' else int(pot * 0.75)
+        # Value sizing: 75-100% pot with strong hands
+        if pr >= 10 or (hi == 14 and lo >= 12):
+            bet_size = int(pot * 0.9)  # was 0.75 — extract more
         elif pr >= 7 or hi >= 13:
-            bet_size = int(pot * 0.7)
+            bet_size = int(pot * 0.75)
         else:
-            bet_size = int(pot * 0.55)
-        update_hand_state('bet')
-        return ("bet", bet_size, "opening with standard sizing")
+            bet_size = int(pot * 0.55)  # speculative opens
+        return ("bet", bet_size, "opening with a standard sizing")
     
     if "bet" in allowed and not in_range:
-        # Steal from late position vs tight opponents
-        if pos >= 3:
-            if 'steal_more_late' in exploit_notes and random.random() < 0.30:
-                update_hand_state('bet')
-                return ("bet", int(pot * 0.5), f"steal vs {opponent_style}")
-            if random.random() < 0.10:  # occasional steal
-                update_hand_state('bet')
-                return ("bet", int(pot * 0.5), "late position steal attempt")
+        # Steal from late position occasionally
+        if pos >= 3 and random.random() < 0.25:
+            return ("bet", int(pot * 0.5), "late position steal attempt")
         if "check" in allowed:
             return ("check", 0, "taking a free look")
         return ("fold", 0, "nothing to get excited about")
@@ -416,7 +338,7 @@ def choose_preflop_action(state):
     return ("fold", 0, "not investing here")
 
 def choose_postflop_action(state):
-    """Decide post-flop action using multi-street logic with opponent exploitation."""
+    """Decide post-flop action based on board texture and hand strength."""
     hole_cards = state.get("hole_cards", [])
     board = state.get("board", [])
     allowed = state.get("allowed_actions", [])
@@ -424,37 +346,103 @@ def choose_postflop_action(state):
     pot = state.get("pot", 0)
     stack = state.get("stack", 0)
     street = state.get("street", "flop")
-    opponent_style = state.get("opponent_style", "unknown")
-    position = state.get("position", 3)
     
     pr = pair_rank(hole_cards)
     hi, lo = high_card_ranks(hole_cards) if hole_cards else (0, 0)
     texture = classify_board(board)
-    in_position = position >= 3
     
-    hs = get_hand_state()
-    raised_pf = hs.get('raised_preflop', False)
-    prev_action = hs.get('prev_action', 'check')
-    prev_eq = hs.get('prev_equity', 0)
+    # Estimate hand strength (simplified)
+    # 0=nothing, 1=draw, 2=pair, 3=overpair/two_pair, 4=trips+, 5=straight/flush+
+    strength = 0
+    if pr > 0:
+        # Check if we hit a set
+        board_ranks = [c[0].upper() for c in board]
+        rank_char = {14:'A',13:'K',12:'Q',11:'J',10:'T',9:'9',8:'8',7:'7',6:'6',5:'5',4:'4',3:'3',2:'2'}
+        our_rank = rank_char.get(pr, '')
+        if our_rank in board_ranks:
+            strength = 4  # trips
+        elif pr > max(card_rank_value(r) for r in board_ranks) if board_ranks else 14:
+            strength = 3  # overpair
+        else:
+            strength = 2  # pair
+    elif hi >= 10:
+        # Check if we hit top pair
+        board_ranks = [c[0].upper() for c in board]
+        rank_char = {14:'A',13:'K',12:'Q',11:'J',10:'T'}
+        for rk, rc in rank_char.items():
+            if hi == rk and rc in board_ranks:
+                strength = 2  # hit top pair
+                break
+        else:
+            strength = 1 if (texture in ("wet", "connected_low") and is_suited(hole_cards)) else 0
+    else:
+        strength = 1 if texture in ("wet", "connected_low") else 0
     
-    # Use the quant engine's multi-street postflop
-    action, amount, msg, eq = postflop_decision(
-        hole_cards, board, allowed, pot, stack,
-        call_amount=call_amount,
-        num_opponents=1,
-        street=street,
-        opponent_style=opponent_style,
-        raised_preflop=raised_pf,
-        in_position=in_position,
-        prev_action_on_prior_street=prev_action,
-        prev_equity=prev_eq,
-    )
+    # Facing a bet
+    if call_amount > 0 and "call" in allowed:
+        # RIVER: tight calling — avoid losing big pots with marginal hands
+        if street in ("River",):
+            if strength >= 3:
+                # Strong — call or raise
+                if call_amount <= pot * 0.66 and "raise" in allowed:
+                    raise_to = min(call_amount * 2, stack)
+                    return ("raise", raise_to, "my hand is too strong to just call")
+                return ("call", call_amount, "calling with a strong holding")
+            if strength == 2 and call_amount <= pot * 0.33:
+                # Thin call with one pair vs small bet
+                return ("call", call_amount, "getting a good price with showdown value")
+            # Fold everything else on river
+            if "fold" in allowed:
+                return ("fold", 0, f"not calling this river without the goods")
+            return ("call", call_amount, "pot odds force a call")
+        
+        # TURN and earlier: normal calling
+        if strength >= 3:
+            if "raise" in allowed:
+                raise_to = min(call_amount * 3, stack)
+                return ("raise", raise_to, "this board favors my holding")
+            return ("call", call_amount, "value extracting")
+        
+        if strength == 2 and call_amount <= pot * 0.5:
+            return ("call", call_amount, "one pair, one more street")
+        
+        if strength == 1 and call_amount <= pot * 0.2 and texture == "dry":
+            return ("call", call_amount, "floating the dry board")
+        
+        if "fold" in allowed:
+            return ("fold", 0, f"can't continue on this {texture} board")
+        return ("call", call_amount, "pot odds demand a call")
     
-    update_hand_state(action, eq, street)
-    return (action, amount, msg)
+    # Initiative — we can bet or check
+    if "bet" in allowed:
+        if strength >= 4:  # trips+
+            bet_size = int(pot)  # full pot, extract max
+            return ("bet", bet_size, "building the pot with a monster")
+        if strength >= 3:  # overpair/two-pair
+            bet_size = int(pot * 0.85)
+            return ("bet", bet_size, "strong hand, standard value sizing")
+        if strength == 2:  # top pair
+            bet_size = int(pot * 0.7)
+            return ("bet", bet_size, "standard c-bet continuation")
+        # bluffs/semi-bluffs
+        if texture == "dry" and street in ("flop",):
+            bet_size = int(pot * 0.45)
+            return ("bet", bet_size, "board is dry, this should fold out weak pairs")
+        if texture == "ace_high" and street == "flop":
+            bet_size = int(pot * 0.33)
+            return ("bet", bet_size, "ace-high board favors my range")
+        if "check" in allowed:
+            return ("check", 0, "taking the free card")
+    
+    if "check" in allowed:
+        if strength >= 2 and texture == "wet":
+            return ("check", 0, "keeping the pot controlled on a wet board")
+        return ("check", 0, "checking behind")
+    
+    return ("fold", 0, "nothing here")
 
 def decide_action(table):
-    """Quantitative decision engine with tournament awareness."""
+    """Quantitative decision engine."""
     allowed_actions = table.get("allowedActions", {})
     available = allowed_actions.get("availableActions", [])
     street = table.get("street", "PreDeal")
@@ -468,11 +456,6 @@ def decide_action(table):
     stack = 0
     num_opp = 0
     opponent_style = "unknown"
-    opp_stats = None
-    
-    # Tournament context
-    all_stacks = []
-    active_seats = 0
     
     for seat in table.get("seats", []):
         if seat.get("seatNumber") == self_seat:
@@ -480,35 +463,14 @@ def decide_action(table):
             stack = seat.get("stackChips", 0)
         elif seat.get("status") in ("Active", "AllIn"):
             num_opp += 1
-            active_seats += 1
-            s_chips = seat.get("stackChips", 0)
-            all_stacks.append(s_chips)
             # Try to get opponent style
             aid = seat.get("agentId", "")
             if aid:
                 style = get_opponent_style(aid)
                 if style != "unknown":
-                    opponent_style = style
-                # Also get raw stats
-                opp_stats = get_opponent_stats(aid)
-        elif seat.get("status") == "Waiting":
-            active_seats += 1
+                    opponent_style = style  # use worst-case opponent style
     
     num_opp = max(num_opp, 1)
-    
-    # Compute tournament context
-    total_players = len(table.get("seats", []))
-    active_players = active_seats + 1  # include ourselves
-    avg_stack = sum(all_stacks) / len(all_stacks) if all_stacks else stack
-    
-    # Get state for hands_played
-    state = load_state()
-    hands_played = state.get("hands_played", 0)
-    
-    # Detect hand start → reset hand state
-    hs = get_hand_state()
-    if street in ('PreDeal', 'Preflop') and hs.get('street') not in ('PreDeal', 'Preflop'):
-        reset_hand_state()
     
     # Compute call amount
     call_amount = allowed_actions.get("callAmount", 0) or allowed_actions.get("callChips", 0) or 0
@@ -516,37 +478,18 @@ def decide_action(table):
     # Estimate position from seat number and dealer position
     dealer_seat = table.get("dealerSeatNumber", 0) or 0
     pos = 3  # default BTN
-    in_position = True  # default
     if self_seat and dealer_seat:
         seats_count = len(table.get("seats", []))
         offset_from_dealer = (self_seat - dealer_seat) % seats_count
         pos_map = {1: 3, 2: 4, 3: 5, 4: 0, 5: 1, 6: 2}  # relative positions
         pos = pos_map.get(offset_from_dealer, 3)
-        in_position = pos >= 3  # CO/BTN are IP
     
-    # Use quantitative engine with full tournament context
+    # Use quantitative engine
     action, amount, msg, confidence = quant_decision(
         hole_cards, board, available, pot, stack,
         call_amount, current_bet, num_opp, street, opponent_style,
-        bb_size=2, position=pos,
-        # New params
-        raised_preflop=hs.get('raised_preflop', False),
-        in_position=in_position,
-        total_players=total_players,
-        active_players=active_players,
-        hands_played=hands_played,
-        avg_stack=avg_stack,
-        prev_action=hs.get('prev_action', 'check'),
-        prev_equity=hs.get('prev_equity', 0),
-        opponent_stats=opp_stats,
+        bb_size=2, position=pos
     )
-    
-    # Track hand state
-    if street in ('PreDeal', 'Preflop'):
-        if action in ('bet', 'raise'):
-            update_hand_state(action)
-    else:
-        update_hand_state(action, confidence, street)
     
     return (action, amount, msg)
 
@@ -730,9 +673,6 @@ def main_loop():
                                 log(f"   Lost to: {w.get('agentName','?')} ({w.get('handName','?')})")
                     state["hands_played"] = state.get("hands_played", 0) + 1
                     save_state(state)
-                    
-                    # Reset hand state at end of hand
-                    reset_hand_state()
                     
                     if state["hands_played"] % 10 == 0:
                         log(f"📊 {state['hands_played']} hands, {state['hands_won']} won | "
