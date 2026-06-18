@@ -21,6 +21,18 @@ htmlcov/
 # Logs
 logs/
 *.log
-# Runtime state
-poker/.arena-*
-poker/opponent_profiles.json
+.arena-*
+
+# Generated opponent profiling data (lives outside the repo by default)
+opponent_profiles.json
+
+# Packaging / build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test / coverage caches
+.pytest_cache/
+.coverage
+htmlcov/

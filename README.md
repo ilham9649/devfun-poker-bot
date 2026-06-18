@@ -16,14 +16,19 @@ An AI-powered Texas Hold'em poker bot for the [dev.fun Arena](https://arena.dev.
 ## Architecture
 
 ```
+pokerbot/                      # Importable package
+├── bot.py                     # Main bot — API polling, decision routing, chat
+├── quant.py                   # Quantitative engine — equity, strategy, ICM (fallback)
+├── profiler.py                # Opponent profiler — tracks hands, builds profiles
+└── player.py                  # AI player — Gemini 3.1 Flash Lite + profiler integration
 scripts/
-├── devfun_poker_bot.py      # Main bot — API polling, decision routing, chat
-├── poker_quant.py           # Quantitative engine — equity, strategy, ICM (fallback)
-├── poker_profiler.py        # Opponent profiler — tracks hands, builds profiles
-├── poker_player.py          # AI player — Gemini 3.1 Flash Lite + profiler integration
-├── test_poker_quant.py      # Test suite (145 tests)
-├── devfun_monitor.sh        # Auto-restart monitor
-└── devfun_coach_collect.sh  # Coach data collector
+├── devfun_monitor.sh          # Auto-restart monitor (cron)
+└── devfun_coach_collect.sh    # Coach data collector (cron)
+tests/
+├── test_quant.py              # Test suite
+└── fixtures/                  # Captured API payloads for table-fixture tests
+pyproject.toml                 # Package metadata + `pokerbot` entry point
+requirements.txt               # Runtime deps (requests)
 ```
 
 ## AI Player (Optional)
@@ -31,8 +36,8 @@ scripts/
 The bot can use **Gemini 3.1 Flash Lite** for smarter decisions, incorporating real-time opponent profiling.
 
 ### Two-Agent Architecture
-1. **Profiler Agent** (`poker_profiler.py`) — Tracks opponent actions across hands, builds statistical profiles with VPIP, PFR, AF, 3-bet%, fold-to-cbet%, and generates natural-language summaries
-2. **Player Agent** (`poker_player.py`) — Passes profiler output + table state to Gemini, parses AI response into action. Falls back to `quant_decision()` on API errors/timeouts
+1. **Profiler Agent** (`pokerbot/profiler.py`) — Tracks opponent actions across hands, builds statistical profiles with VPIP, PFR, AF, 3-bet%, fold-to-cbet%, and generates natural-language summaries
+2. **Player Agent** (`pokerbot/player.py`) — Passes profiler output + table state to Gemini, parses AI response into action. Falls back to `quant_decision()` on API errors/timeouts
 
 ### Setup
 Set the Gemini API key as an environment variable:
@@ -42,7 +47,7 @@ export GEMINI_DEEP_RESEARCH_API_KEY=your_key_here
 The bot will automatically start using Gemini for decisions. No code changes needed.
 
 ### Profile Data
-Opponent profiles are stored in `opponent_profiles.json` in the project root. This is our own data — not from the platform API. Reliability scales with hands observed (low < 10, medium < 20, high 20+).
+Opponent profiles are stored in `opponent_profiles.json` at the workspace root (one level above the repo). This is our own data — not from the platform API. Reliability scales with hands observed (low < 10, medium < 20, high 20+).
 
 ## Setup
 
@@ -53,10 +58,12 @@ Opponent profiles are stored in `opponent_profiles.json` in the project root. Th
    apiKey=arena_sk_xxx
    agentId=cmqxxx
    ```
-4. Update `COMPETITION_ID` in `devfun_poker_bot.py` to your target competition
+4. Update `COMPETITION_ID` in `pokerbot/bot.py` to your target competition
 5. Run:
    ```bash
-   python3 scripts/devfun_poker_bot.py
+   python3 -m pokerbot.bot
+   # or, after `pip install .`:
+   pokerbot
    ```
 
 ## Strategy Overview
@@ -87,7 +94,7 @@ Opponent profiles are stored in `opponent_profiles.json` in the project root. Th
 ## Testing
 
 ```bash
-python3 scripts/test_poker_quant.py
+python3 tests/test_quant.py
 ```
 
 ## License

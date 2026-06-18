@@ -1,0 +1,3 @@
+# Runtime dependencies for the poker bot.
+# (Gemini is called via raw REST in pokerbot/player.py — no SDK required.)
+requests>=2.28
