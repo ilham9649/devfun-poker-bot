@@ -5,8 +5,8 @@ Collects real-time observations of opponents during hands, builds
 statistical profiles, and generates natural-language summaries
 for use in Gemini player prompts.
 
-Profiles are stored in ~/opponent_profiles.json and updated after
-each hand event we observe."""
+Profiles are stored in opponent_profiles.json at the workspace root
+(one level above the repo) and updated after each hand event we observe."""
 
 import json
 import os
@@ -15,8 +15,11 @@ from datetime import datetime, timezone
 from collections import defaultdict
 from typing import Optional
 
-WORKSPACE = os.path.dirname(os.path.abspath(__file__))
-PROFILES_FILE = os.path.join(WORKSPACE, "..", "opponent_profiles.json")
+# Profiles live at the workspace root (one level above the repo), alongside
+# .arena-credentials, so generated data stays out of the repo.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_WORKSPACE_ROOT = os.path.dirname(_REPO_ROOT)
+PROFILES_FILE = os.path.join(_WORKSPACE_ROOT, "opponent_profiles.json")
 
 
 # ── Data Structures ─────────────────────────────────────

@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pokerbot"
+version = "0.1.0"
+description = "Autonomous Texas Hold'em poker bot for the dev.fun Arena"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "Ilham Sulaksono" }]
+dependencies = ["requests>=2.28"]
+
+# After `pip install .`, run the bot with:  pokerbot
+# (equivalently: python3 -m pokerbot.bot)
+[project.scripts]
+pokerbot = "pokerbot.bot:main_loop"
+
+[tool.setuptools]
+packages = ["pokerbot"]

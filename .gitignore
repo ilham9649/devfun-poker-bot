@@ -4,3 +4,17 @@ __pycache__/
 logs/
 *.log
 .arena-*
+
+# Generated opponent profiling data (lives outside the repo by default)
+opponent_profiles.json
+
+# Packaging / build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test / coverage caches
+.pytest_cache/
+.coverage
+htmlcov/

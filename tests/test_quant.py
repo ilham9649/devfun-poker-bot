@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Test suite for poker_quant.py — tournament readiness validation.
+"""Test suite for pokerbot.quant — tournament readiness validation.
 Tests: preflop classification, push/fold, equity, postflop, opponents, ICM, 3-bet/4-bet."""
 
 import sys
 import os
 import traceback
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from poker_quant import (
+# Add the repo root (parent of tests/) to sys.path so `from pokerbot.quant`
+# resolves whether run via `python3 tests/test_quant.py` or a test runner.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from pokerbot.quant import (
     # Card utils
     preflop_hand_key, card_rank, card_suit, make_deck,
     # Equity

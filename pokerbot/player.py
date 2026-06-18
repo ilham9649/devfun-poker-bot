@@ -15,15 +15,20 @@ import time
 import requests
 from typing import Optional
 
-# Import profiler
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from poker_profiler import Profiler
+# Import sibling package modules. Ensure the repo root (parent of this
+# package) is importable so `from pokerbot... import` resolves regardless
+# of how the process is launched.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from pokerbot.profiler import Profiler
 
 # Import quant engine as fallback
-from poker_quant import quant_decision, preflop_equity, monte_carlo_equity
+from pokerbot.quant import quant_decision, preflop_equity, monte_carlo_equity
 
-WORKSPACE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PROFILES_FILE = os.path.join(WORKSPACE, "opponent_profiles.json")
+# Profiles live at the workspace root (one level above the repo), alongside
+# .arena-credentials, so generated data stays out of the repo.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_WORKSPACE_ROOT = os.path.dirname(_REPO_ROOT)
+PROFILES_FILE = os.path.join(_WORKSPACE_ROOT, "opponent_profiles.json")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_DEEP_RESEARCH_API_KEY", "")
 GEMINI_MODEL = "gemini-3.1-flash-lite"

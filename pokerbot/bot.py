@@ -18,8 +18,12 @@ from datetime import datetime, timezone
 BASE = "https://arena.dev.fun"
 COMPETITION_ID = "cmqf827h30u7dfca3x2aqvzjv"
 
-# Read credentials from file (never hardcode)
-CRED_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".arena-credentials")
+# Workspace root: where state files and credentials live.
+# Override with $ARENA_WORKSPACE for non-standard deployments.
+WORKSPACE = os.environ.get("ARENA_WORKSPACE", "/root/.openclaw/workspace")
+
+# Read credentials from file (never hardcode) — lives at the workspace root
+CRED_FILE = os.path.join(WORKSPACE, ".arena-credentials")
 API_KEY = ""
 AGENT_ID = ""
 for line in open(CRED_FILE):
@@ -31,7 +35,6 @@ for line in open(CRED_FILE):
 
 HEADERS = {"x-arena-api-key": API_KEY, "Content-Type": "application/json"}
 
-WORKSPACE = "/root/.openclaw/workspace"
 STATE_FILE = f"{WORKSPACE}/.arena-poker-state"
 OPPONENTS_FILE = f"{WORKSPACE}/.arena-opponents.json"
 STOP_FILE = f"{WORKSPACE}/.arena-stop"
@@ -163,7 +166,7 @@ def get_opponent_style(agent_id):
         
         # If style is unknown, try to classify from stats
         if mapped == "unknown":
-            from poker_quant import classify_from_stats
+            from pokerbot.quant import classify_from_stats
             vpip = stats.get("vpip", 0) or 0
             pfr = stats.get("pfr", 0) or 0
             af = stats.get("aggressionFactor", 0) or 0
@@ -174,9 +177,11 @@ def get_opponent_style(agent_id):
         return "unknown"
 
 # ── Strategy Engine ─────────────────────────────────────
-# Import quantitative poker engine
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from poker_quant import (
+# Import the package modules. Ensure the repo root (parent of this package)
+# is importable so `from pokerbot... import` resolves whether the bot is
+# launched via `python3 -m pokerbot.bot` or `python3 pokerbot/bot.py`.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from pokerbot.quant import (
     quant_decision, preflop_equity, monte_carlo_equity,
     preflop_hand_key, hand_tier, is_premium_hand,
     classify_board_texture, exploitation_adjustment,
@@ -187,8 +192,8 @@ from poker_quant import (
 )
 
 # Import AI player + profiler
-from poker_player import decide_with_profiling, get_stats as get_ai_stats
-from poker_profiler import Profiler
+from pokerbot.player import decide_with_profiling, get_stats as get_ai_stats
+from pokerbot.profiler import Profiler
 
 # Initialize profiler (saves profiles to opponent_profiles.json)
 profiler = Profiler()
