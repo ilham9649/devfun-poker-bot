@@ -1,6 +1,24 @@
-.env
+node_modules/
+*.zip
+
+# Python / build
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Generated data
+opponent_profiles.json
+
+# Test caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
 logs/
 *.log
 .arena-*
