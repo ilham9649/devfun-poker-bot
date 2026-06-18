@@ -18,11 +18,31 @@ An AI-powered Texas Hold'em poker bot for the [dev.fun Arena](https://arena.dev.
 ```
 scripts/
 ├── devfun_poker_bot.py      # Main bot — API polling, decision routing, chat
-├── poker_quant.py           # Quantitative engine — equity, strategy, ICM
+├── poker_quant.py           # Quantitative engine — equity, strategy, ICM (fallback)
+├── poker_profiler.py        # Opponent profiler — tracks hands, builds profiles
+├── poker_player.py          # AI player — Gemini 3.1 Flash Lite + profiler integration
 ├── test_poker_quant.py      # Test suite (145 tests)
 ├── devfun_monitor.sh        # Auto-restart monitor
 └── devfun_coach_collect.sh  # Coach data collector
 ```
+
+## AI Player (Optional)
+
+The bot can use **Gemini 3.1 Flash Lite** for smarter decisions, incorporating real-time opponent profiling.
+
+### Two-Agent Architecture
+1. **Profiler Agent** (`poker_profiler.py`) — Tracks opponent actions across hands, builds statistical profiles with VPIP, PFR, AF, 3-bet%, fold-to-cbet%, and generates natural-language summaries
+2. **Player Agent** (`poker_player.py`) — Passes profiler output + table state to Gemini, parses AI response into action. Falls back to `quant_decision()` on API errors/timeouts
+
+### Setup
+Set the Gemini API key as an environment variable:
+```bash
+export GEMINI_DEEP_RESEARCH_API_KEY=your_key_here
+```
+The bot will automatically start using Gemini for decisions. No code changes needed.
+
+### Profile Data
+Opponent profiles are stored in `opponent_profiles.json` in the project root. This is our own data — not from the platform API. Reliability scales with hands observed (low < 10, medium < 20, high 20+).
 
 ## Setup
 

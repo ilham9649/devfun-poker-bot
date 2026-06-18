@@ -11,6 +11,9 @@ import sys
 import random
 from datetime import datetime, timezone
 
+# Gemini AI player: set GEMINI_DEEP_RESEARCH_API_KEY env var for AI-powered decisions
+# Falls back to quant_decision() automatically if unset or unavailable
+
 # ── Config ──────────────────────────────────────────────
 BASE = "https://arena.dev.fun"
 COMPETITION_ID = "cmqf827h30u7dfca3x2aqvzjv"
@@ -177,11 +180,18 @@ from poker_quant import (
     quant_decision, preflop_equity, monte_carlo_equity,
     preflop_hand_key, hand_tier, is_premium_hand,
     classify_board_texture, exploitation_adjustment,
-    classify_from_stats, hand_in_range as quant_hand_in_range,
+    classify_from_stats,
     get_fold_equity, tournament_phase, is_near_bubble,
     icm_tighten_factor, effective_bb_over_time,
     postflop_decision, estimate_draw_equity,
 )
+
+# Import AI player + profiler
+from poker_player import decide_with_profiling, get_stats as get_ai_stats
+from poker_profiler import Profiler
+
+# Initialize profiler (saves profiles to opponent_profiles.json)
+profiler = Profiler()
 
 # ── Tightened Preflop Ranges (VPIP ~25-30%) ──
 # UTG: ~15%, HJ: ~20%, CO: ~25%, BTN: ~30%, SB: ~25%, BB: ~10% (defending)
@@ -454,7 +464,7 @@ def choose_postflop_action(state):
     return (action, amount, msg)
 
 def decide_action(table):
-    """Quantitative decision engine with tournament awareness."""
+    """Decision engine: Gemini 3.1 Flash Lite + profiler, falls back to quant_decision."""
     allowed_actions = table.get("allowedActions", {})
     available = allowed_actions.get("availableActions", [])
     street = table.get("street", "PreDeal")
@@ -468,11 +478,6 @@ def decide_action(table):
     stack = 0
     num_opp = 0
     opponent_style = "unknown"
-    opp_stats = None
-    
-    # Tournament context
-    all_stacks = []
-    active_seats = 0
     
     for seat in table.get("seats", []):
         if seat.get("seatNumber") == self_seat:
@@ -480,73 +485,32 @@ def decide_action(table):
             stack = seat.get("stackChips", 0)
         elif seat.get("status") in ("Active", "AllIn"):
             num_opp += 1
-            active_seats += 1
-            s_chips = seat.get("stackChips", 0)
-            all_stacks.append(s_chips)
-            # Try to get opponent style
             aid = seat.get("agentId", "")
             if aid:
                 style = get_opponent_style(aid)
                 if style != "unknown":
                     opponent_style = style
-                # Also get raw stats
-                opp_stats = get_opponent_stats(aid)
-        elif seat.get("status") == "Waiting":
-            active_seats += 1
     
     num_opp = max(num_opp, 1)
-    
-    # Compute tournament context
-    total_players = len(table.get("seats", []))
-    active_players = active_seats + 1  # include ourselves
-    avg_stack = sum(all_stacks) / len(all_stacks) if all_stacks else stack
-    
-    # Get state for hands_played
-    state = load_state()
-    hands_played = state.get("hands_played", 0)
-    
-    # Detect hand start → reset hand state
-    hs = get_hand_state()
-    if street in ('PreDeal', 'Preflop') and hs.get('street') not in ('PreDeal', 'Preflop'):
-        reset_hand_state()
     
     # Compute call amount
     call_amount = allowed_actions.get("callAmount", 0) or allowed_actions.get("callChips", 0) or 0
     
-    # Estimate position from seat number and dealer position
+    # Estimate position
     dealer_seat = table.get("dealerSeatNumber", 0) or 0
-    pos = 3  # default BTN
-    in_position = True  # default
+    pos = 3
     if self_seat and dealer_seat:
         seats_count = len(table.get("seats", []))
         offset_from_dealer = (self_seat - dealer_seat) % seats_count
-        pos_map = {1: 3, 2: 4, 3: 5, 4: 0, 5: 1, 6: 2}  # relative positions
+        pos_map = {1: 3, 2: 4, 3: 5, 4: 0, 5: 1, 6: 2}
         pos = pos_map.get(offset_from_dealer, 3)
-        in_position = pos >= 3  # CO/BTN are IP
     
-    # Use quantitative engine with full tournament context
-    action, amount, msg, confidence = quant_decision(
+    # Try Gemini + profiler first, fallback to quant_decision
+    action, amount, msg, extra = decide_with_profiling(
         hole_cards, board, available, pot, stack,
-        call_amount, current_bet, num_opp, street, opponent_style,
-        bb_size=2, position=pos,
-        # New params
-        raised_preflop=hs.get('raised_preflop', False),
-        in_position=in_position,
-        total_players=total_players,
-        active_players=active_players,
-        hands_played=hands_played,
-        avg_stack=avg_stack,
-        prev_action=hs.get('prev_action', 'check'),
-        prev_equity=hs.get('prev_equity', 0),
-        opponent_stats=opp_stats,
+        call_amount, current_bet, num_opp, street,
+        pos, table, profiler, bb_size=2
     )
-    
-    # Track hand state
-    if street in ('PreDeal', 'Preflop'):
-        if action in ('bet', 'raise'):
-            update_hand_state(action)
-    else:
-        update_hand_state(action, confidence, street)
     
     return (action, amount, msg)
 
@@ -731,6 +695,15 @@ def main_loop():
                     state["hands_played"] = state.get("hands_played", 0) + 1
                     save_state(state)
                     
+                    # Feed hand result to profiler
+                    for seat in table.get("seats", []):
+                        aid = seat.get("agentId", "")
+                        if aid and aid != AGENT_ID:
+                            aname = seat.get("agentName", "")
+                            p = profiler.get_or_create(aid, aname)
+                            p.record_hand_observed()
+                    profiler.save()
+                    
                     # Reset hand state at end of hand
                     reset_hand_state()
                     
@@ -785,7 +758,14 @@ def main_loop():
         if h > 0 and h != last_reported and h % 30 == 0:
             state["_last_status_report"] = h
             save_state(state)
-            log(f"STATUS: {h} hands | {state.get('hands_won',0)} won | Biggest pot: {state.get('biggest_pot',0)} | Chips: {total_chips}")
+            ai_stats = get_ai_stats()
+            if ai_stats.get('gemini_calls', 0) > 0:
+                success_rate = ai_stats['gemini_success'] / ai_stats['gemini_calls'] * 100 if ai_stats['gemini_calls'] > 0 else 0
+                log(f"STATUS: {h} hands | {state.get('hands_won',0)} won | Chips: {total_chips} | "
+                    f"AI: {ai_stats['gemini_success']}/{ai_stats['gemini_calls']} calls ({success_rate:.0f}%) | "
+                    f"Fallbacks: {ai_stats['fallback_calls']} | Profiles: {len(profiler.profiles)}")
+            else:
+                log(f"STATUS: {h} hands | {state.get('hands_won',0)} won | Big pot: {state.get('biggest_pot',0)} | Chips: {total_chips}")
         
         time.sleep(POLL_INTERVAL)
 
