@@ -659,15 +659,14 @@ def main_loop():
                 if board:
                     log(f"   Board: {' '.join(board)} | Pot: {table.get('potChips',0)}")
                 
-                # Use quant engine for all decisions, even under time pressure
+                # Use decision engine (Gemini + profiler, or quant fallback)
                 action, amt, msg = decide_action(table)
                 
-                chat = f"{msg}. {get_chat(action)}"
-                # Truncate to 500
-                if len(chat) > 500:
-                    chat = chat[:497] + "..."
+                # Public chat: only send safe, randomized messages (never Gemini reasoning)
+                # Gemini reasoning may contain hole cards or strategy thinking — keep it in logs only
+                chat = get_chat(action)
                 
-                log(f"   → {action.upper()}" + (f" {amt}" if amt else "") + f" | {chat}")
+                log(f"   → {action.upper()}" + (f" {amt}" if amt else "") + f" | {msg}. {get_chat(action)}")
                 
                 result = post("/api/arena/texas/action", {
                     "tableId": table_id,
