@@ -18,8 +18,9 @@ from datetime import datetime, timezone
 BASE = "https://arena.dev.fun"
 COMPETITION_ID = "cmqf827h30u7dfca3x2aqvzjv"
 
-# Read credentials from file (never hardcode)
-CRED_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".arena-credentials")
+# Read credentials from file (never hardcode) — at workspace root
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+CRED_FILE = os.path.join(_REPO_ROOT, ".arena-credentials")
 API_KEY = ""
 AGENT_ID = ""
 for line in open(CRED_FILE):
@@ -31,7 +32,8 @@ for line in open(CRED_FILE):
 
 HEADERS = {"x-arena-api-key": API_KEY, "Content-Type": "application/json"}
 
-WORKSPACE = "/root/.openclaw/workspace"
+# Workspace: where state/pid/coach files live (poker/ dir at workspace root)
+WORKSPACE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATE_FILE = f"{WORKSPACE}/.arena-poker-state"
 OPPONENTS_FILE = f"{WORKSPACE}/.arena-opponents.json"
 STOP_FILE = f"{WORKSPACE}/.arena-stop"

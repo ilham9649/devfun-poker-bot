@@ -21,3 +21,6 @@ htmlcov/
 # Logs
 logs/
 *.log
+# Runtime state
+poker/.arena-*
+poker/opponent_profiles.json
