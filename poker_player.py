@@ -260,10 +260,10 @@ def decide_with_profiling(hole_cards, board, allowed_actions, pot, stack,
             msg = f"🎯 Gemini: {reasoning}"
             return (action, amount, msg, confidence)
     
-    # Fallback to quant_decision
+    # Fallback to quant_decision (returns 4 values: action, amount, msg, confidence)
     stats["fallback_calls"] += 1
     
-    action, amount, msg = quant_decision(
+    action, amount, msg, _ = quant_decision(
         hole_cards, board, allowed_actions, pot, stack,
         call_amount, current_bet, num_opponents, street, "unknown",
         bb_size, position
