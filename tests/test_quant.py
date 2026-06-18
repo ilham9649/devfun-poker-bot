@@ -6,8 +6,8 @@ import sys
 import os
 import traceback
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from poker_quant import (
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from pokerbot.quant import (
     # Card utils
     preflop_hand_key, card_rank, card_suit, make_deck,
     # Equity

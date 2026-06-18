@@ -16,11 +16,11 @@ import requests
 from typing import Optional
 
 # Import profiler
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from poker_profiler import Profiler
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from pokerbot.profiler import Profiler
 
 # Import quant engine as fallback
-from poker_quant import quant_decision, preflop_equity, monte_carlo_equity
+from pokerbot.quant import quant_decision, preflop_equity, monte_carlo_equity
 
 WORKSPACE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROFILES_FILE = os.path.join(WORKSPACE, "opponent_profiles.json")

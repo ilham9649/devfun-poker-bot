@@ -163,7 +163,7 @@ def get_opponent_style(agent_id):
         
         # If style is unknown, try to classify from stats
         if mapped == "unknown":
-            from poker_quant import classify_from_stats
+            from pokerbot.quant import classify_from_stats
             vpip = stats.get("vpip", 0) or 0
             pfr = stats.get("pfr", 0) or 0
             af = stats.get("aggressionFactor", 0) or 0
@@ -175,8 +175,8 @@ def get_opponent_style(agent_id):
 
 # ── Strategy Engine ─────────────────────────────────────
 # Import quantitative poker engine
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from poker_quant import (
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from pokerbot.quant import (
     quant_decision, preflop_equity, monte_carlo_equity,
     preflop_hand_key, hand_tier, is_premium_hand,
     classify_board_texture, exploitation_adjustment,
@@ -187,8 +187,8 @@ from poker_quant import (
 )
 
 # Import AI player + profiler
-from poker_player import decide_with_profiling, get_stats as get_ai_stats
-from poker_profiler import Profiler
+from pokerbot.player import decide_with_profiling, get_stats as get_ai_stats
+from pokerbot.profiler import Profiler
 
 # Initialize profiler (saves profiles to opponent_profiles.json)
 profiler = Profiler()
