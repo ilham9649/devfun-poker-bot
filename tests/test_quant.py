@@ -4,6 +4,7 @@ Tests: preflop classification, push/fold, equity, postflop, opponents, ICM, 3-be
 
 import sys
 import os
+import random
 import traceback
 
 # Add the repo root (parent of tests/) to sys.path so `from pokerbot.quant`
@@ -36,6 +37,11 @@ from pokerbot.quant import (
     # Pot odds
     pot_odds, should_call, ev_of_action,
 )
+
+# Seed the global RNG so Monte-Carlo equity (monte_carlo_equity draws from the
+# global random.shuffle) is reproducible run-to-run — keeps this suite
+# deterministic so CI is stable instead of ~1-in-4 flaky on the flush-draw test.
+random.seed(42)
 
 # ── Test Framework ──
 passed = 0
