@@ -16,14 +16,14 @@ from datetime import datetime, timezone
 
 # ── Config ──────────────────────────────────────────────
 BASE = "https://arena.dev.fun"
-COMPETITION_ID = "cmqf827h30u7dfca3x2aqvzjv"
+# Competition ID — override via ARENA_COMPETITION_ID env var
+# Current: cmqf827h30u7dfca3x2aqvzjv = Playground S3
+# Eval:    seed_poker_eval_s1 = Eval S1
+COMPETITION_ID = os.environ.get("ARENA_COMPETITION_ID", "cmqf827h30u7dfca3x2aqvzjv")
 
-# Workspace root: where state files and credentials live.
-# Override with $ARENA_WORKSPACE for non-standard deployments.
-WORKSPACE = os.environ.get("ARENA_WORKSPACE", "/root/.openclaw/workspace")
-
-# Read credentials from file (never hardcode) — lives at the workspace root
-CRED_FILE = os.path.join(WORKSPACE, ".arena-credentials")
+# Read credentials from file (never hardcode). Always at workspace root.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+CRED_FILE = os.path.join(_REPO_ROOT, ".arena-credentials")
 API_KEY = ""
 AGENT_ID = ""
 for line in open(CRED_FILE):
@@ -35,6 +35,9 @@ for line in open(CRED_FILE):
 
 HEADERS = {"x-arena-api-key": API_KEY, "Content-Type": "application/json"}
 
+# Workspace: where state/pid/coach files live. Defaults to repo root parent dir.
+# Override via ARENA_WORKSPACE for multi-instance (e.g. eval).
+WORKSPACE = os.environ.get("ARENA_WORKSPACE", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 STATE_FILE = f"{WORKSPACE}/.arena-poker-state"
 OPPONENTS_FILE = f"{WORKSPACE}/.arena-opponents.json"
 STOP_FILE = f"{WORKSPACE}/.arena-stop"
@@ -177,9 +180,7 @@ def get_opponent_style(agent_id):
         return "unknown"
 
 # ── Strategy Engine ─────────────────────────────────────
-# Import the package modules. Ensure the repo root (parent of this package)
-# is importable so `from pokerbot... import` resolves whether the bot is
-# launched via `python3 -m pokerbot.bot` or `python3 pokerbot/bot.py`.
+# Import quantitative poker engine
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pokerbot.quant import (
     quant_decision, preflop_equity, monte_carlo_equity,
@@ -592,7 +593,7 @@ def get_chat(action, strength=0):
 
 def main_loop():
     log("=== OpenClaw Poker Bot Started ===")
-    log(f"Competition: Playground S3 | Bankroll: 1000 chips | Max rebuys: 5")
+    log(f"Competition: {COMPETITION_ID} | Bankroll: 1000 chips | Max rebuys: 5")
     
     state = load_state()
     joined = False  # track if we've joined this session
@@ -668,12 +669,20 @@ def main_loop():
                 
                 log(f"   → {action.upper()}" + (f" {amt}" if amt else "") + f" | {msg}. {get_chat(action)}")
                 
-                result = post("/api/arena/texas/action", {
+                # Build action payload
+                action_payload = {
                     "tableId": table_id,
                     "action": action,
                     "amount": amt,
                     "message": chat
-                })
+                }
+                # Eval/benchmark requires reasoning field (separate from chat message)
+                if COMPETITION_ID == "seed_poker_eval_s1":
+                    # Strip emoji prefix from msg for reasoning
+                    reasoning = msg.replace("🎯 Gemini: ", "").replace("🔧 quant: ", "")
+                    action_payload["reasoning"] = reasoning
+                
+                result = post("/api/arena/texas/action", action_payload)
                 
                 if result.get("_error"):
                     log(f"   Action rejected: {result.get('_body','?')}")
