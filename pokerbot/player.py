@@ -24,11 +24,14 @@ from pokerbot.profiler import Profiler
 # Import quant engine as fallback
 from pokerbot.quant import quant_decision, preflop_equity, monte_carlo_equity
 
-# Profiles live at the workspace root (one level above the repo), alongside
-# .arena-credentials, so generated data stays out of the repo.
+# Profiles default to one level above the repo (alongside .arena-credentials)
+# so generated data stays out of the repo, but follow ARENA_WORKSPACE if set
+# (so multi-instance/eval runs get isolated profile sets). ARENA_PROFILES_FILE
+# overrides the location outright.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_WORKSPACE_ROOT = os.path.dirname(_REPO_ROOT)
-PROFILES_FILE = os.path.join(_WORKSPACE_ROOT, "opponent_profiles.json")
+_DEFAULT_PROFILES_DIR = os.path.dirname(_REPO_ROOT)
+_PROFILES_DIR = os.environ.get("ARENA_WORKSPACE", _DEFAULT_PROFILES_DIR)
+PROFILES_FILE = os.environ.get("ARENA_PROFILES_FILE", os.path.join(_PROFILES_DIR, "opponent_profiles.json"))
 
 GEMINI_API_KEY = os.environ.get("GEMINI_DEEP_RESEARCH_API_KEY", "")
 GEMINI_MODEL = "gemini-3.1-flash-lite"

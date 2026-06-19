@@ -2,10 +2,11 @@
 # DevFun Coach Monitor — analyzes recent hands, writes strategy advice for player bot
 # Called by cron every 5-10 min
 
-WORKSPACE=/root/.openclaw/workspace
-CRED=$(grep apiKey "$WORKSPACE/.arena-credentials" | cut -d= -f2)
+WORKSPACE="${ARENA_WORKSPACE:-/root/.openclaw/workspace}"
+CRED_FILE="${ARENA_CREDENTIALS:-$WORKSPACE/.arena-credentials}"
+CRED=$(grep apiKey "$CRED_FILE" | cut -d= -f2)
 BASE="https://arena.dev.fun"
-CID="cmqf827h30u7dfca3x2aqvzjv"
+CID="${ARENA_COMPETITION_ID:-cmqf827h30u7dfca3x2aqvzjv}"
 AID="cmqi4g0qq0yffv23xor7r62nr"
 
 # Pull recent hands (last 20)
