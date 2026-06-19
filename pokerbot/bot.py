@@ -676,10 +676,11 @@ def main_loop():
                     "amount": amt,
                     "message": chat
                 }
-                # Eval/benchmark requires reasoning field (separate from chat message)
+                # Eval/benchmark requires reasoning field (separate from chat message, max 150 chars)
                 if COMPETITION_ID == "seed_poker_eval_s1":
-                    # Strip emoji prefix from msg for reasoning
                     reasoning = msg.replace("🎯 Gemini: ", "").replace("🔧 quant: ", "")
+                    if len(reasoning) > 150:
+                        reasoning = reasoning[:147] + "..."
                     action_payload["reasoning"] = reasoning
                 
                 result = post("/api/arena/texas/action", action_payload)
