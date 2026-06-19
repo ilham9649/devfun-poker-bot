@@ -11,7 +11,7 @@ An AI-powered Texas Hold'em poker bot for the [dev.fun Arena](https://arena.dev.
 - **3-bet/4-bet Strategy** — Value and bluff 3-bets, proper 4-bet/5-bet response
 - **Multi-Street Postflop** — C-bet, double barrel, float, and river value/thin value
 - **Opponent Exploitation** — Adjusts play vs Nit/Station/LAG/TAG/Weak-Tight opponents
-- **Auto-Restart** — Monitor script handles crashes and auto-rebuys
+- **Auto-Rebuy** — Automatically re-enters (up to 5 rebuys) after busting; the cron monitor script logs status
 
 ## Architecture
 
@@ -22,7 +22,7 @@ pokerbot/                      # Importable package
 ├── profiler.py                # Opponent profiler — tracks hands, builds profiles
 └── player.py                  # AI player — Gemini 3.1 Flash Lite + profiler integration
 scripts/
-├── devfun_monitor.sh          # Auto-restart monitor (cron)
+├── devfun_monitor.sh          # Status logger (cron)
 └── devfun_coach_collect.sh    # Coach data collector (cron)
 tests/
 ├── test_quant.py              # Test suite
@@ -47,24 +47,42 @@ export GEMINI_DEEP_RESEARCH_API_KEY=your_key_here
 The bot will automatically start using Gemini for decisions. No code changes needed.
 
 ### Profile Data
-Opponent profiles are stored in `opponent_profiles.json` at the workspace root (one level above the repo). This is our own data — not from the platform API. Reliability scales with hands observed (low < 10, medium < 20, high 20+).
+Opponent profiles are stored in `opponent_profiles.json` **one level above the repo** (alongside `.arena-credentials`) — distinct from the `.arena-*` state files, which live under `ARENA_WORKSPACE` (see [Configuration](#configuration)). This is our own data — not from the platform API. Reliability scales with hands observed (low < 10, medium < 20, high 20+).
 
 ## Setup
 
 1. Clone the repo
-2. Copy `.env.example` to `.env` and fill in your arena credentials
-3. Rename `.env` to `.arena-credentials` in your workspace root:
+2. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. Create `.arena-credentials` **one level above the repo** (the workspace root) with your arena credentials. The bot reads this file directly — there is **no `.env` loader**, so skip the `.env` dance:
    ```
    apiKey=arena_sk_xxx
    agentId=cmqxxx
    ```
-4. Update `COMPETITION_ID` in `pokerbot/bot.py` to your target competition
+4. (Optional) Configure via environment variables — see [Configuration](#configuration). **No source edits needed.**
 5. Run:
    ```bash
    python3 -m pokerbot.bot
    # or, after `pip install .`:
    pokerbot
    ```
+
+## Configuration
+
+All runtime settings are environment variables — **no source edits required**.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ARENA_COMPETITION_ID` | `cmqf827h30u7dfca3x2aqvzjv` (Playground S3) | Target competition. Set to `seed_poker_eval_s1` for eval mode (below). |
+| `ARENA_WORKSPACE` | the repo root | Directory for runtime state files (`.arena-poker-state`, `.arena-opponents.json`, `.arena-bot.pid`, `.arena-stop`, `.arena-coach-advice`). |
+| `GEMINI_DEEP_RESEARCH_API_KEY` | _(unset)_ | Enables the Gemini AI player. Unset ⇒ quantitative engine only. |
+
+Credentials are **not** an env var: they're read from `.arena-credentials` one level above the repo, at import time (so that file must exist before the bot starts). Opponent profiles (`opponent_profiles.json`) are also written one level above the repo.
+
+### Eval mode
+Set `ARENA_COMPETITION_ID=seed_poker_eval_s1` to run in benchmark/eval mode, which attaches a `reasoning` field (truncated to 150 chars) to each submitted action.
 
 ## Strategy Overview
 

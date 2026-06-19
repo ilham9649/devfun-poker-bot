@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DevFun Arena Texas Hold'em Poker Bot — Playground S3.
+"""DevFun Arena Texas Hold'em Poker Bot.
 Polls pending-actions, makes rule-based decisions, submits actions.
 Uses configured model for tough spots only."""
 
