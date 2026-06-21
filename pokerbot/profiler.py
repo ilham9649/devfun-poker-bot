@@ -15,11 +15,14 @@ from datetime import datetime, timezone
 from collections import defaultdict
 from typing import Optional
 
-# Profiles live at the workspace root (one level above the repo), alongside
-# .arena-credentials, so generated data stays out of the repo.
+# Profiles default to one level above the repo (alongside .arena-credentials)
+# so generated data stays out of the repo, but follow ARENA_WORKSPACE if set
+# (so multi-instance/eval runs get isolated profile sets). ARENA_PROFILES_FILE
+# overrides the location outright.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_WORKSPACE_ROOT = os.path.dirname(_REPO_ROOT)
-PROFILES_FILE = os.path.join(_WORKSPACE_ROOT, "opponent_profiles.json")
+_DEFAULT_PROFILES_DIR = os.path.dirname(_REPO_ROOT)
+_PROFILES_DIR = os.environ.get("ARENA_WORKSPACE", _DEFAULT_PROFILES_DIR)
+PROFILES_FILE = os.environ.get("ARENA_PROFILES_FILE", os.path.join(_PROFILES_DIR, "opponent_profiles.json"))
 
 
 # ── Data Structures ─────────────────────────────────────
