@@ -46,15 +46,15 @@ stats = {"gemini_calls": 0, "gemini_success": 0, "gemini_timeout": 0,
 
 # ── Gemini API Call ─────────────────────────────────────
 
-def _call_gemini(prompt: str) -> Optional[dict]:
+def _call_gemini(prompt: str, max_tokens: int = 200) -> Optional[dict]:
     """Call Gemini 3.1 Flash Lite. Returns parsed JSON or None."""
     if not GEMINI_API_KEY:
         return None
-    
+
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
-            "maxOutputTokens": 200,
+            "maxOutputTokens": max_tokens,
             "temperature": 0.2,
             "top_p": 0.9
         }
@@ -262,6 +262,68 @@ def gemini_decision(hole_cards, board, pot, stack, call_amount, current_bet,
 
 
 # ── Main Decision Entry Point ───────────────────────────
+
+# ── LLM Opponent Reader ─────────────────────────────────
+# Runs OFF the decision path (post-hand, throttled by the Profiler). Reads an
+# opponent's accumulated stats + action transcript + showdown history and
+# synthesizes a qualitative tendencies summary. The result is cached on the
+# profile (Profiler.summary_for_prompt) and injected into the decision prompt
+# with ZERO added decision latency. Returns the rendered summary string, or
+# None on any failure so the caller keeps the deterministic fallback.
+
+def llm_opponent_summary(profile) -> Optional[str]:
+    """Synthesize a qualitative opponent tendencies summary via Gemini.
+
+    Returns a prompt-ready summary string on success, None on any failure
+    (no API key, timeout, non-200, unparseable/invalid JSON)."""
+    if not GEMINI_API_KEY:
+        return None
+
+    stats = profile.compute_stats()
+    name = profile.agent_name or f"Opponent {profile.agent_id[:8]}"
+    reliability = ("high" if profile.total_actions >= 20 else
+                   "medium" if profile.total_actions >= 10 else "low")
+
+    prompt = f"""You are a poker opponent-reader. Given a target opponent's observed stats, recent action transcript, and showdown history, write a CONCISE tendencies profile an exploiting player can act on in one read.
+
+OPPONENT: {name} — current read: {profile.classify_style()} (reliability: {reliability})
+HANDS OBSERVED: {profile.hands_observed}, ACTIONS: {profile.total_actions}
+
+STATS:
+  VPIP {stats['vpip']*100:.0f}% | PFR {stats['pfr']*100:.0f}% | AF {stats['aggression_factor']:.1f} | 3bet {stats['three_bet_pct']*100:.0f}% | c-bet {stats['cbet_pct']*100:.0f}% | fold-to-cbet {stats['fold_to_cbet_pct']*100:.0f}%
+
+RECENT ACTION TRANSCRIPT (most recent last):
+{profile.transcript_text(limit=20)}
+
+SHOWDOWN HANDS REVEALED:
+{profile.showdown_text(limit=10)}
+
+Return ONLY valid JSON (no markdown, no extra text):
+{{"style": "<one phrase: e.g. tight-aggressive / loose-passive calling station / maniac / nit>", "tendencies": ["<short concrete tendency>", "<up to 4 more>"], "exploitation": ["<one short exploit hint>", "<optional second>"], "reliability": "<low|medium|high>"}}"""
+
+    result = _call_gemini(prompt, max_tokens=300)
+    if not isinstance(result, dict):
+        return None
+
+    style = result.get("style", "").strip()
+    tendencies = result.get("tendencies", [])
+    exploitation = result.get("exploitation", [])
+    reliability = result.get("reliability", "").strip() or reliability
+
+    # Schema validation: need at least a style and one concrete tendency.
+    if not style or not isinstance(tendencies, list) or not tendencies:
+        return None
+    tendencies = [t for t in tendencies if isinstance(t, str) and t.strip()]
+    exploitation = [t for t in exploitation if isinstance(t, str) and t.strip()]
+    if not tendencies:
+        return None
+
+    rendered = f"{name}: {style} (reliability: {reliability})."
+    rendered += " Tendencies: " + "; ".join(tendencies) + "."
+    if exploitation:
+        rendered += " Exploit: " + "; ".join(exploitation) + "."
+    return rendered
+
 
 def decide_with_profiling(hole_cards, board, allowed_actions, pot, stack,
                           call_amount, current_bet, num_opponents, street,

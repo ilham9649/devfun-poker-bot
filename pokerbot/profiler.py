@@ -12,7 +12,7 @@ import json
 import os
 import time
 from datetime import datetime, timezone
-from collections import defaultdict
+from collections import defaultdict, deque
 from typing import Optional
 
 # Profiles default to one level above the repo (alongside .arena-credentials)
@@ -82,30 +82,57 @@ class OpponentProfile:
         self.style_classification = "unknown"
         self.profile_summary = ""
         self.last_updated = time.time()
+
+        # ── LLM opponent-reader material + cache ──
+        # Bounded, recent narrative for the LLM to reason over (not just aggregates).
+        # Each action entry: {"street","action","sizing_bb","pot_before","facing_bet","ts"}
+        self.recent_actions: deque = deque(maxlen=40)
+        # Each showdown entry: {"hand_name","won","pot","street_reached","ts"}
+        self.showdown_history: deque = deque(maxlen=20)
+
+        # Cached LLM-written tendencies summary + throttling bookkeeping.
+        # Empty llm_summary ⇒ decision path falls back to generate_summary().
+        self.llm_summary: str = ""
+        self.llm_summary_at: float = 0.0        # epoch of last successful LLM refresh
+        self.llm_hands_at_refresh: int = 0      # hands_observed when last refreshed
+        self.hands_since_llm_refresh: int = 0   # incremented per observed hand
     
     def record_action(self, action: str, street: str, pot: int, call_amount: int,
-                      stack_before: int, is_preflop: bool, board_texture: str = ""):
+                      stack_before: int, is_preflop: bool, board_texture: str = "",
+                      sizing_bb: float = 0.0, facing_bet: bool = False,
+                      pot_before: int = 0):
         """Record one observed opponent action."""
         self.last_seen = time.time()
         self.total_actions += 1
-        
+
         act = action.lower()
         if act in self.actions:
             self.actions[act] += 1
-        
+
         if is_preflop and act in self.preflop_actions:
             self.preflop_actions[act] += 1
         elif not is_preflop and act in self.postflop_actions:
             self.postflop_actions[act] += 1
-        
+
         if act in ("bet", "raise", "all-in"):
             self.chips_lost += call_amount  # they put money in
         elif act == "call":
             self.chips_lost += call_amount
         # fold doesn't cost extra (already committed blinds)
+
+        # Append a compact transcript entry for the LLM reader (bounded).
+        self.recent_actions.append({
+            "street": street,
+            "action": act,
+            "sizing_bb": round(sizing_bb, 1),
+            "pot_before": pot_before or pot,
+            "facing_bet": facing_bet,
+            "ts": time.time(),
+        })
     
     def record_hand_observed(self):
         self.hands_observed += 1
+        self.hands_since_llm_refresh += 1
     
     def record_chip_change(self, delta: int):
         if delta > 0:
@@ -133,7 +160,72 @@ class OpponentProfile:
         self.cbet_opportunities += 1
         if did_cbet:
             self.cbet_actual += 1
-    
+
+    # ── LLM opponent-reader support ───────────────────────
+
+    def record_showdown(self, hand_name: str, won: bool, pot: int, street_reached: str = "River"):
+        """Record a showdown-revealed hand (handName from the Arena winners list)."""
+        self.showdown_history.append({
+            "hand_name": hand_name or "?",
+            "won": bool(won),
+            "pot": int(pot or 0),
+            "street_reached": street_reached,
+            "ts": time.time(),
+        })
+
+    def needs_llm_refresh(self, showdown_triggered: bool = False, n_hands: int = 8) -> bool:
+        """Throttle predicate for re-running the LLM reader on this opponent.
+
+        Refresh when: no summary yet, OR this opponent just reached showdown,
+        OR n_hands have passed since the last refresh. Never refresh with too
+        little data to be worth a call (>= 3 hands observed)."""
+        if self.hands_observed < 3:
+            return False
+        if not self.llm_summary:
+            return True
+        if showdown_triggered and self.hands_observed > self.llm_hands_at_refresh:
+            return True
+        return self.hands_since_llm_refresh >= n_hands
+
+    def set_llm_summary(self, text: str):
+        """Cache an LLM-written summary and reset the throttle counters."""
+        self.llm_summary = text
+        self.llm_summary_at = time.time()
+        self.llm_hands_at_refresh = self.hands_observed
+        self.hands_since_llm_refresh = 0
+        self.last_updated = time.time()
+
+    def transcript_text(self, limit: int = 20) -> str:
+        """Compact narrative of recent actions for the LLM prompt."""
+        if not self.recent_actions:
+            return "(no individual actions captured yet)"
+        items = list(self.recent_actions)[-limit:]
+        lines = []
+        for a in items:
+            tag = a["action"]
+            extra = ""
+            if tag in ("bet", "raise", "all-in") and a.get("sizing_bb"):
+                extra = f" {a['sizing_bb']:.1f}bb"
+            elif a.get("facing_bet") and tag in ("fold", "call", "check"):
+                extra = " facing bet"
+            lines.append(f"{a['street']}:{tag}{extra}")
+        return ", ".join(lines)
+
+    def showdown_text(self, limit: int = 10) -> str:
+        if not self.showdown_history:
+            return "none reached showdown"
+        items = list(self.showdown_history)[-limit:]
+        return ", ".join(
+            f"{s['hand_name']}({'won' if s['won'] else 'lost'})" for s in items
+        )
+
+    def summary_for_prompt(self) -> str:
+        """Single source the decision path reads: cached LLM summary, else
+        the deterministic generate_summary() fallback."""
+        if self.llm_summary:
+            return self.llm_summary
+        return self.generate_summary()
+
     def compute_stats(self) -> dict:
         """Compute derived statistics from raw counts."""
         total_non_check = self.actions["bet"] + self.actions["raise"] + self.actions["call"] + self.actions["fold"] + self.actions["all-in"]
@@ -253,9 +345,16 @@ class OpponentProfile:
             "stats": stats,
             "actions_breakdown": dict(self.actions),
             "style_classification": self.classify_style(),
-            "profile_summary": self.generate_summary()
+            "profile_summary": self.generate_summary(),
+            # LLM opponent-reader material + cache (deques serialized as lists)
+            "recent_actions": list(self.recent_actions),
+            "showdown_history": list(self.showdown_history),
+            "llm_summary": self.llm_summary,
+            "llm_summary_at": datetime.fromtimestamp(self.llm_summary_at, tz=timezone.utc).isoformat() if self.llm_summary_at else "",
+            "llm_hands_at_refresh": self.llm_hands_at_refresh,
+            "hands_since_llm_refresh": self.hands_since_llm_refresh,
         }
-    
+
     @classmethod
     def from_dict(cls, data: dict):
         p = cls(data["agent_id"], data.get("agent_name", ""))
@@ -267,6 +366,16 @@ class OpponentProfile:
         fb = data.get("actions_breakdown", {})
         for k in p.actions:
             p.actions[k] = fb.get(k, 0)
+        # Restore LLM-reader material + cache (old profiles load fine without these)
+        for entry in data.get("recent_actions", []):
+            p.recent_actions.append(entry)
+        for entry in data.get("showdown_history", []):
+            p.showdown_history.append(entry)
+        p.llm_summary = data.get("llm_summary", "")
+        lsa = data.get("llm_summary_at", "")
+        p.llm_summary_at = datetime.fromisoformat(lsa).timestamp() if lsa else 0.0
+        p.llm_hands_at_refresh = data.get("llm_hands_at_refresh", 0)
+        p.hands_since_llm_refresh = data.get("hands_since_llm_refresh", 0)
         return p
 
 
@@ -308,9 +417,14 @@ class Profiler:
     
     def observe_action(self, agent_id: str, action: str, street: str, pot: int,
                        call_amount: int, stack_before: int, is_preflop: bool,
-                       board_texture: str = "", agent_name: str = ""):
+                       board_texture: str = "", agent_name: str = "",
+                       sizing_bb: float = 0.0, facing_bet: bool = False,
+                       pot_before: int = 0):
         profile = self.get_or_create(agent_id, agent_name)
-        profile.record_action(action, street, pot, call_amount, stack_before, is_preflop, board_texture)
+        profile.record_action(action, street, pot, call_amount, stack_before,
+                              is_preflop, board_texture,
+                              sizing_bb=sizing_bb, facing_bet=facing_bet,
+                              pot_before=pot_before)
     
     def record_hand_observed(self, agent_id: str):
         if agent_id in self.profiles:
@@ -331,7 +445,7 @@ class Profiler:
         
         for profile in sorted_profiles:
             if profile.total_actions > 0:
-                parts.append(profile.generate_summary())
+                parts.append(profile.summary_for_prompt())
             else:
                 name = profile.agent_name or f"Opponent {profile.agent_id[:8]}"
                 parts.append(f"{name}: no data yet (new opponent).")

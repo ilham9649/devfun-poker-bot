@@ -213,7 +213,7 @@ from pokerbot.quant import (
 )
 
 # Import AI player + profiler
-from pokerbot.player import decide_with_profiling, get_stats as get_ai_stats
+from pokerbot.player import decide_with_profiling, get_stats as get_ai_stats, llm_opponent_summary
 from pokerbot.profiler import Profiler
 
 # Initialize profiler (saves profiles to opponent_profiles.json)
@@ -329,6 +329,124 @@ def update_hand_state(action, equity=0, street=None):
 
 def get_hand_state():
     return _hand_state
+
+# ── Opponent Action Capture (feeds the Profiler + LLM reader) ──
+# The Arena API exposes no action log, so we infer each opponent's action by
+# diffing per-seat state between consecutive table snapshots we see (once per
+# our turn). Blinds never get mis-counted: the snapshot is dropped at hand-end,
+# so each hand's first snapshot has no predecessor to diff against.
+_last_table_snapshot = {}
+
+_STREET_ORDER = {"PreDeal": 0, "Preflop": 1, "Flop": 2, "Turn": 3, "River": 4}
+
+
+def _classify_seat_action(prev_seat, curr_seat, prev_snap, bb_size):
+    """Infer one opponent action from a seat's stack/status change.
+
+    Returns (action, chips_in, facing_bet) or None when nothing conclusive."""
+    prev_stack = prev_seat.get("stackChips", 0) or 0
+    curr_stack = curr_seat.get("stackChips", 0) or 0
+    delta = prev_stack - curr_stack  # >0 = chips left their stack
+    prev_status = prev_seat.get("status")
+    curr_status = curr_seat.get("status")
+    facing_bet = (prev_snap.get("currentBet", 0) or 0) > 0
+
+    if curr_status == "Folded" and prev_status != "Folded":
+        return ("fold", 0, facing_bet)
+    if curr_status == "AllIn" and prev_status != "AllIn":
+        return ("all-in", delta, facing_bet)
+    if delta > bb_size:  # clearly voluntary (more than a single blind)
+        if facing_bet:
+            call_sz = prev_snap.get("currentBet", 0) or 0
+            return ("raise" if delta > call_sz * 1.3 else "call", delta, facing_bet)
+        return ("bet", delta, facing_bet)
+    if delta > 0:  # small voluntary — limp or min-call
+        return ("call" if facing_bet else "bet", delta, facing_bet)
+    if prev_status != "Folded" and curr_status != "Folded" and not facing_bet:
+        return ("check", 0, facing_bet)
+    return None
+
+
+def _capture_opponent_actions(table, profiler_obj, our_agent_id, bb_size=2):
+    """Diff this table snapshot vs the prior one for this tableId and feed each
+    inferred opponent action to the profiler. Best-effort: the LLM reader is
+    robust to the residual noise; deterministic stats may under/over-count but
+    never crash."""
+    table_id = table.get("tableId")
+    if table_id is None:
+        return
+    street = table.get("street", "PreDeal")
+    seats = table.get("seats", []) or []
+
+    # Build the current per-seat snapshot.
+    curr_seats = {}
+    for seat in seats:
+        sn = seat.get("seatNumber")
+        if sn is None:
+            continue
+        curr_seats[sn] = {
+            "agentId": seat.get("agentId", ""),
+            "agentName": seat.get("agentName", ""),
+            "stackChips": seat.get("stackChips", 0) or 0,
+            "status": seat.get("status", ""),
+        }
+    curr_snap = {
+        "seats": curr_seats,
+        "street": street,
+        "potChips": table.get("potChips", 0) or 0,
+        "currentBet": table.get("currentBet", 0) or 0,
+    }
+
+    prev_snap = _last_table_snapshot.get(table_id)
+    if prev_snap:
+        prev_street = prev_snap.get("street", "PreDeal")
+        prev_pot = prev_snap.get("potChips", 0) or 0
+        # New-hand guard: street regressed or pot reset → don't diff.
+        same_hand = (_STREET_ORDER.get(street, 0) >= _STREET_ORDER.get(prev_street, 0)
+                     and curr_snap["potChips"] >= prev_pot * 0.5)
+        if same_hand:
+            pot_before = prev_pot
+            is_preflop = street in ("PreDeal", "Preflop")
+            board_tex = classify_board(table.get("boardCards", []) or [])
+            for sn, curr_seat in curr_seats.items():
+                aid = curr_seat.get("agentId", "")
+                if not aid or aid == our_agent_id:
+                    continue
+                prev_seat = prev_snap["seats"].get(sn)
+                if not prev_seat or prev_seat.get("agentId") != aid:
+                    continue
+                inferred = _classify_seat_action(prev_seat, curr_seat, prev_snap, bb_size)
+                if not inferred:
+                    continue
+                action, chips_in, fbet = inferred
+                profiler_obj.observe_action(
+                    agent_id=aid, agent_name=curr_seat.get("agentName", ""),
+                    action=action, street=street, pot=pot_before,
+                    call_amount=chips_in, stack_before=prev_seat.get("stackChips", 0),
+                    is_preflop=is_preflop, board_texture=board_tex,
+                    sizing_bb=round(chips_in / bb_size, 1) if bb_size else 0.0,
+                    facing_bet=fbet, pot_before=pot_before,
+                )
+
+    _last_table_snapshot[table_id] = curr_snap
+
+
+def refresh_opponent_llm_profile(profile, showdown_triggered=False, gemini_enabled=False):
+    """Throttled LLM re-profile of one opponent. Runs only post-hand (off the
+    decision path). Returns True when a fresh summary was written."""
+    if not gemini_enabled or profile is None:
+        return False
+    if not profile.needs_llm_refresh(showdown_triggered=showdown_triggered):
+        return False
+    try:
+        summary = llm_opponent_summary(profile)
+    except Exception as e:
+        log(f"⚠️ LLM profile error for {profile.agent_id[:8]}: {e}")
+        return False
+    if summary:
+        profile.set_llm_summary(summary)
+        return True
+    return False
 
 # ── Opponent Stats Tracker ──
 _opponent_stats_cache = {}
@@ -491,6 +609,8 @@ def choose_postflop_action(state):
 
 def decide_action(table):
     """Decision engine: Gemini 3.1 Flash Lite + profiler, falls back to quant_decision."""
+    # Capture opponent actions seen since our last turn (cheap; off the LLM path).
+    _capture_opponent_actions(table, profiler, AGENT_ID)
     allowed_actions = table.get("allowedActions", {})
     available = allowed_actions.get("availableActions", [])
     street = table.get("street", "PreDeal")
@@ -729,14 +849,39 @@ def main_loop():
                     state["hands_played"] = state.get("hands_played", 0) + 1
                     save_state(state)
                     
-                    # Feed hand result to profiler
+                    # Feed hand result to profiler + run the throttled LLM
+                    # opponent-reader (off the decision path — the hand is over).
+                    gemini_on = bool(os.environ.get("GEMINI_DEEP_RESEARCH_API_KEY", ""))
+                    # Opponents who reached a real showdown (a handName was revealed).
+                    showdown_ids = {w.get("agentId") for w in winners if w.get("handName")}
+                    llm_refreshes = 0
                     for seat in table.get("seats", []):
                         aid = seat.get("agentId", "")
-                        if aid and aid != AGENT_ID:
-                            aname = seat.get("agentName", "")
-                            p = profiler.get_or_create(aid, aname)
-                            p.record_hand_observed()
+                        if not aid or aid == AGENT_ID:
+                            continue
+                        aname = seat.get("agentName", "")
+                        prof = profiler.get_or_create(aid, aname)
+                        prof.record_hand_observed()
+                        # Showdown-revealed hand for this opponent. Only winners'
+                        # handNames are exposed by the API; losers' cards stay hidden.
+                        if aid in showdown_ids:
+                            w = next((x for x in winners if x.get("agentId") == aid), {})
+                            prof.record_showdown(
+                                hand_name=w.get("handName", ""),
+                                won=True,
+                                pot=w.get("amount", 0),
+                                street_reached=tbl.get("street", "River"),
+                            )
+                        # Throttled re-profile (showdown OR every N hands); cap cost/hand.
+                        if llm_refreshes < 2 and refresh_opponent_llm_profile(
+                                prof, showdown_triggered=(aid in showdown_ids),
+                                gemini_enabled=gemini_on):
+                            llm_refreshes += 1
+                            log(f"🧠 LLM profiled {aname or aid[:8]}: {prof.llm_summary[:60]}")
                     profiler.save()
+                    # Drop the per-table snapshot so the next hand starts clean
+                    # (its first snapshot then has no predecessor → blinds aren't diffed).
+                    _last_table_snapshot.pop(table_id, None)
                     
                     # Reset hand state at end of hand
                     reset_hand_state()
