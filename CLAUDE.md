@@ -15,30 +15,30 @@ python3 tests/test_quant.py        # run the test suite (plain script; exits 0 o
 ```
 
 - No linter, formatter, or build step is configured. Target Python ≥ 3.8. `pyproject.toml` declares the package and a `pokerbot` console-script entry point (`pokerbot.bot:main_loop`).
-- The test file is a **self-contained script** (its own `test()`/`test_approx()` runner with ~145 assertions across 10 groups), **not** pytest. Run the whole file; there is no per-test isolation and pytest won't collect it cleanly.
-- The suite covers `pokerbot/quant.py` only. `bot.py`, `player.py`, and `profiler.py` have **no tests**.
+- The test files are **self-contained scripts** (each its own `test()`/`test_approx()` runner), **not** pytest. Run the whole file; there is no per-test isolation and pytest won't collect them cleanly.
+- Coverage: `tests/test_quant.py` (the engine, ~145 assertions; note: its Monte-Carlo equity assertions are **flaky** and fail ~50% of runs near decision thresholds — unrelated to other modules), `tests/test_player.py` (Gemini decision + amount validation), `tests/test_profiler.py` (profiler data model + LLM throttle), `tests/test_opponent_reader.py` (`player.llm_opponent_summary`, mocked Gemini), `tests/test_capture.py` (`bot` action-capture + LLM refresh helper). `quant.py`/`player.py`/`profiler.py` are import-safe; `bot.py` has import-time side effects (credential read + `fcntl` PID lock) and is imported in `test_capture.py` by staging a throwaway `.arena-credentials` at its read-path with `ARENA_WORKSPACE` isolating state files.
 
 ## Layout
 
 ```
 pokerbot/   # importable package
-            #   bot.py      — orchestrator (polling loop, lifecycle, decision routing)
+            #   bot.py      — orchestrator (polling loop, lifecycle, decision routing, opponent-action capture)
             #   quant.py    — fallback engine (equity, ICM, push/fold, postflop)
-            #   player.py   — Gemini 3.1 Flash Lite decision agent
-            #   profiler.py — opponent profiling
+            #   player.py   — Gemini 3.1 Flash Lite decision agent + LLM opponent reader
+            #   profiler.py — opponent profiling (stats + LLM-read tendencies)
 scripts/    # devfun_monitor.sh, devfun_coach_collect.sh — standalone cron helpers
-tests/      # test_quant.py (+ fixtures/)
+tests/      # test_quant.py, test_player.py, test_profiler.py, test_opponent_reader.py, test_capture.py (+ fixtures/)
 ```
 
 ## Architecture
 
 A **two-agent design with a quantitative fallback**, all inside the `pokerbot` package:
 
-1. **Orchestrator — `pokerbot/bot.py`**. Owns all I/O and state: the `main_loop()` polling loop, lifecycle (queue join, auto-rebuy up to 5×, single-instance `fcntl` PID lock, `.arena-stop` kill-switch file), chat-message pools, the per-hand `_hand_state` machine, and `decide_action()` — the single decision router. It instantiates one global `Profiler` and feeds it hand results after each completed hand.
+1. **Orchestrator — `pokerbot/bot.py`**. Owns all I/O and state: the `main_loop()` polling loop, lifecycle (queue join, auto-rebuy up to 5×, single-instance `fcntl` PID lock, `.arena-stop` kill-switch file), chat-message pools, the per-hand `_hand_state` machine, and `decide_action()` — the single decision router. It instantiates one global `Profiler`, **captures opponent actions** by snapshot-diffing table state once per our turn (`_capture_opponent_actions`), and after each completed hand records showdowns and runs the throttled LLM opponent-reader (`refresh_opponent_llm_profile`, capped at 2 refreshes/hand).
 
-2. **Player Agent — `pokerbot/player.py`**. The primary decision engine: `decide_with_profiling()` builds a prompt from table state + opponent profile summaries, calls **Gemini 3.1 Flash Lite** (`_call_gemini`, 2 s timeout), and parses a JSON response `{action, amount, confidence, reasoning}`. On any failure (no API key, timeout, non-200, unparseable/invalid response) it **falls back to `quant_decision()`**. Gated entirely by the `GEMINI_DEEP_RESEARCH_API_KEY` env var — unset ⇒ always falls back to quant.
+2. **Player Agent — `pokerbot/player.py`**. The primary decision engine: `decide_with_profiling()` builds a prompt from table state + opponent profile summaries, calls **Gemini 3.1 Flash Lite** (`_call_gemini`, 2 s timeout), and parses a JSON response `{action, amount, confidence, reasoning}`. On any failure (no API key, timeout, non-200, unparseable/invalid response) it **falls back to `quant_decision()`**. Also hosts `llm_opponent_summary(profile)` — the LLM opponent-reader that turns an opponent's stats + action transcript + showdown history into a qualitative tendencies summary. Gated entirely by the `GEMINI_DEEP_RESEARCH_API_KEY` env var — unset ⇒ always falls back to quant (and the LLM reader is skipped).
 
-3. **Profiler Agent — `pokerbot/profiler.py`**. The `Profiler` class manages `OpponentProfile` objects persisted to `opponent_profiles.json`. It accumulates raw opponent action counts, derives VPIP / PFR / AF / 3-bet% / fold-to-cbet% / c-bet%, classifies style (LAG / TAG / Station / Nit / Weak-Tight), and `generate_summary()` produces the natural-language tendencies injected into the Gemini prompt.
+3. **Profiler Agent — `pokerbot/profiler.py`**. The `Profiler` class manages `OpponentProfile` objects persisted to `opponent_profiles.json`. It accumulates raw opponent action counts, derives VPIP / PFR / AF / 3-bet% / fold-to-cbet% / c-bet%, classifies style (LAG / TAG / Station / Nit / Weak-Tight), and retains a bounded recent-action transcript + showdown history. `summary_for_prompt()` is what the decision path injects: it returns the cached LLM-written tendencies summary when present, else falls back to the deterministic `generate_summary()`. The LLM summary is refreshed post-hand, throttled (at showdown or every ~8 hands observed; `needs_llm_refresh`).
 
 **Fallback engine — `pokerbot/quant.py`** (~1180 lines). A pure, import-safe library (no I/O) that the Player falls back to and that all tests exercise: 5-card hand evaluation (`evaluate_hand`/`compare_hands`), preflop equity from a lookup table (`preflop_equity`), postflop equity via Monte Carlo (`monte_carlo_equity`), tournament overlays (`icm_tighten_factor`, `is_near_bubble`, `tournament_phase`, blind escalation), short-stack Nash push/fold (`is_push_fold_hand`), multi-street postflop (`_flop_decision`/`_turn_decision`/`_river_decision`), and opponent exploitation (`exploitation_adjustment`, `get_fold_equity`). The top-level router is `quant_decision()`.
 
