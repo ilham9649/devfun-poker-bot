@@ -15,9 +15,7 @@ import time
 import requests
 from typing import Optional
 
-# Import sibling package modules. Ensure the repo root (parent of this
-# package) is importable so `from pokerbot... import` resolves regardless
-# of how the process is launched.
+# Import profiler
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pokerbot.profiler import Profiler
 
@@ -142,7 +140,8 @@ def _format_hand_history(table_state: dict) -> str:
 
 def _build_prompt(hole_cards, board, pot, stack, call_amount, current_bet,
                   allowed_actions, street, num_opponents, position,
-                  opponent_profiles_text, bb_size, table_state) -> str:
+                  opponent_profiles_text, bb_size, table_state,
+                  min_bet=None, min_raise_to=None) -> str:
     """Build the complete prompt for Gemini."""
     
     hole_display = " ".join(hole_cards) if hole_cards else "?"
@@ -158,6 +157,13 @@ def _build_prompt(hole_cards, board, pot, stack, call_amount, current_bet,
     if call_amount > 0 and pot > 0:
         odds_pct = round(call_amount / (pot + call_amount) * 100, 1)
         pot_odds_str = f"Pot odds: {odds_pct}% (need to call {call_amount} to win {pot + call_amount})"
+    
+    # Legal sizing constraints from API
+    sizing_rules = ""
+    if "bet" in allowed_actions and min_bet:
+        sizing_rules += f"\n- If betting: minimum legal bet is {min_bet} chips"
+    if "raise" in allowed_actions and min_raise_to:
+        sizing_rules += f"\n- If raising: minimum legal raise to is {min_raise_to} chips"
     
     prompt = f"""You are an expert poker AI playing 6-max No-Limit Texas Hold'em in an online tournament playground. Make decisions based on pot odds, implied odds, opponent tendencies, and proper poker strategy.
 
@@ -182,10 +188,10 @@ Return ONLY valid JSON (no markdown, no extra text):
 {{"action": "fold|check|call|bet|raise", "amount": <number>, "confidence": <0.0-1.0>, "reasoning": "<one sentence>"}}
 
 Rules for bet/raise amounts:
-- If betting: size between 0.33x and 1.0x the pot
-- If raising: size between 2.0x and 4.0x the current bet
+- If betting: size between 0.33x and 1.0x the pot{sizing_rules}
+- If raising: size between 2.0x and 4.0x the current bet{sizing_rules}
 - If all-in: use "all-in" as action, set amount to your stack
-- For fold/check: amount = 0"""
+- For fold/check/call: amount = call_amount or 0"""
 
     return prompt
 
@@ -202,9 +208,22 @@ def gemini_decision(hole_cards, board, pot, stack, call_amount, current_bet,
     On failure: returns (None, None, "fallback to quant", 0.0)
     """
     
+    # Get legal bet/raise limits from table state
+    min_bet = None
+    min_raise_to = None
+    max_commit = stack
+    if table_state:
+        aa = table_state.get("allowedActions", {}) or {}
+        min_bet = aa.get("minBet")
+        min_raise_to = aa.get("minRaiseTo")
+        max_commit = aa.get("maxCommit", stack)
+        bet_range = aa.get("betRange")
+        raise_range = aa.get("raiseRange")
+    
     prompt = _build_prompt(hole_cards, board, pot, stack, call_amount,
                           current_bet, allowed_actions, street, num_opponents,
-                          position, opponent_profiles_text, bb_size, table_state)
+                          position, opponent_profiles_text, bb_size, table_state,
+                          min_bet, min_raise_to)
     
     result = _call_gemini(prompt)
     
@@ -216,14 +235,25 @@ def gemini_decision(hole_cards, board, pot, stack, call_amount, current_bet,
     
     # Validate action
     if action not in allowed_actions and action not in ("fold", "check", "call"):
-        # If Gemini returned something invalid, fall back
         return (None, None, f"Gemini suggested invalid action '{action}'", 0.0)
     
-    # Validate amount
-    if amount < 0:
+    # Validate amount against legal limits
+    if action == "bet":
+        if min_bet and amount < min_bet:
+            amount = min_bet
+        if amount > max_commit:
+            amount = max_commit
+    elif action == "raise":
+        if min_raise_to and amount < min_raise_to:
+            amount = min_raise_to
+        if amount > max_commit:
+            amount = max_commit
+    elif action in ("fold", "check"):
         amount = 0
-    if action in ("bet", "raise") and amount < 1:
-        amount = max(int(pot * 0.5), 1)
+    elif action == "all-in":
+        amount = stack
+    elif action == "call":
+        amount = call_amount
     
     reasoning = result.get("reasoning", "No reasoning given")
     confidence = result.get("confidence", 0.5)

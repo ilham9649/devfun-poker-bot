@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request: # run on PRs into any branch so they're gated before merge
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11" # within the declared requires-python >=3.8
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build check (byte-compile all modules)
+        # Catches syntax errors across every module — including bot/player/profiler,
+        # which have no tests. compileall does not import, so pokerbot/bot.py's
+        # import-time credential/PID-lock side effects are not triggered.
+        run: python -m compileall -q pokerbot tests
+
+      - name: Run tests
+        # tests/test_quant.py is a self-contained script that exits 0 on pass / 1 on fail.
+        run: python tests/test_quant.py
