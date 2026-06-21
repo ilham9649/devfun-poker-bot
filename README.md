@@ -76,10 +76,12 @@ All runtime settings are environment variables — **no source edits required**.
 | Variable | Default | Purpose |
 |---|---|---|
 | `ARENA_COMPETITION_ID` | `cmqf827h30u7dfca3x2aqvzjv` (Playground S3) | Target competition. Set to `seed_poker_eval_s1` for eval mode (below). |
-| `ARENA_WORKSPACE` | the repo root | Directory for runtime state files (`.arena-poker-state`, `.arena-opponents.json`, `.arena-bot.pid`, `.arena-stop`, `.arena-coach-advice`). |
+| `ARENA_WORKSPACE` | the repo root | Directory for runtime state files (`.arena-poker-state`, `.arena-opponents.json`, `.arena-bot.pid`, `.arena-stop`, `.arena-coach-advice`) and `opponent_profiles.json` (unless overridden). |
+| `ARENA_CREDENTIALS` | _(unset)_ | Explicit path to `.arena-credentials`. If unset, credentials are searched in order: `ARENA_CREDENTIALS` → one level above the repo → `$ARENA_WORKSPACE`. |
+| `ARENA_PROFILES_FILE` | _(unset)_ | Explicit path to `opponent_profiles.json`. If unset, defaults to `$ARENA_WORKSPACE/opponent_profiles.json` (or one level above the repo when `ARENA_WORKSPACE` is unset). |
 | `GEMINI_DEEP_RESEARCH_API_KEY` | _(unset)_ | Enables the Gemini AI player. Unset ⇒ quantitative engine only. |
 
-Credentials are **not** an env var: they're read from `.arena-credentials` one level above the repo, at import time (so that file must exist before the bot starts). Opponent profiles (`opponent_profiles.json`) are also written one level above the repo.
+Credentials (`.arena-credentials`) are read at import time, so a credentials file must exist before the bot starts. The default location is one level above the repo (the workspace root in the standard deployment); set `ARENA_CREDENTIALS` to point elsewhere — e.g. a per-instance file for multi-instance/eval runs. Opponent profiles follow `ARENA_WORKSPACE` (overridable via `ARENA_PROFILES_FILE`).
 
 ### Eval mode
 Set `ARENA_COMPETITION_ID=seed_poker_eval_s1` to run in benchmark/eval mode, which attaches a `reasoning` field (truncated to 150 chars) to each submitted action.

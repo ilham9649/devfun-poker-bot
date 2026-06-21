@@ -21,9 +21,38 @@ BASE = "https://arena.dev.fun"
 # Eval:    seed_poker_eval_s1 = Eval S1
 COMPETITION_ID = os.environ.get("ARENA_COMPETITION_ID", "cmqf827h30u7dfca3x2aqvzjv")
 
-# Read credentials from file (never hardcode). Always at workspace root.
+# Workspace: where state/pid/coach files live. Defaults to repo root.
+# Override via ARENA_WORKSPACE for multi-instance (e.g. eval).
+WORKSPACE = os.environ.get("ARENA_WORKSPACE", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+STATE_FILE = f"{WORKSPACE}/.arena-poker-state"
+OPPONENTS_FILE = f"{WORKSPACE}/.arena-opponents.json"
+STOP_FILE = f"{WORKSPACE}/.arena-stop"
+PID_FILE = f"{WORKSPACE}/.arena-bot.pid"
+COACH_FILE = f"{WORKSPACE}/.arena-coach-advice"
+
+
+def _first_existing(paths):
+    """Return the first path in `paths` that exists on disk, else None."""
+    return next((p for p in paths if p and os.path.isfile(p)), None)
+
+
+# Credentials resolution (first match wins):
+#   1. ARENA_CREDENTIALS env var            — explicit per-instance override
+#   2. <parent-of-repo>/.arena-credentials  — legacy / shared-credential default
+#   3. <ARENA_WORKSPACE>/.arena-credentials  — honor the workspace override last
+# Keeping #2 as the default preserves existing deployments unchanged.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CRED_FILE = os.path.join(_REPO_ROOT, ".arena-credentials")
+CRED_FILE = _first_existing([
+    os.environ.get("ARENA_CREDENTIALS", ""),
+    os.path.join(_REPO_ROOT, ".arena-credentials"),
+    os.path.join(WORKSPACE, ".arena-credentials"),
+])
+if CRED_FILE is None:
+    raise FileNotFoundError(
+        ".arena-credentials not found. Set ARENA_CREDENTIALS, or place it at "
+        f"{os.path.join(_REPO_ROOT, '.arena-credentials')!r} or under "
+        f"ARENA_WORKSPACE={WORKSPACE!r}."
+    )
 API_KEY = ""
 AGENT_ID = ""
 for line in open(CRED_FILE):
@@ -34,15 +63,6 @@ for line in open(CRED_FILE):
         AGENT_ID = line.split("=", 1)[1]
 
 HEADERS = {"x-arena-api-key": API_KEY, "Content-Type": "application/json"}
-
-# Workspace: where state/pid/coach files live. Defaults to repo root parent dir.
-# Override via ARENA_WORKSPACE for multi-instance (e.g. eval).
-WORKSPACE = os.environ.get("ARENA_WORKSPACE", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-STATE_FILE = f"{WORKSPACE}/.arena-poker-state"
-OPPONENTS_FILE = f"{WORKSPACE}/.arena-opponents.json"
-STOP_FILE = f"{WORKSPACE}/.arena-stop"
-PID_FILE = f"{WORKSPACE}/.arena-bot.pid"
-COACH_FILE = f"{WORKSPACE}/.arena-coach-advice"
 
 # Coach advice (reloaded periodically)
 coach_advice = ""
