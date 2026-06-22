@@ -337,7 +337,7 @@ def decide_with_profiling(hole_cards, board, allowed_actions, pot, stack,
     
     # Get opponent profiles
     seats = table_state.get("seats", []) if table_state else []
-    our_agent_id = table_state.get("selfSeatNumber", "")
+    our_agent_id = table_state.get("selfAgentId", "")
     
     # Extract opponent IDs from seats
     opponent_ids = []
