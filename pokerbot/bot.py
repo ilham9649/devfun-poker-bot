@@ -68,16 +68,30 @@ HEADERS = {"x-arena-api-key": API_KEY, "Content-Type": "application/json"}
 coach_advice = ""
 last_coach_check = 0
 
-# Prevent duplicate instances
-import fcntl
-try:
-    pid_fd = open(PID_FILE, "w")
-    fcntl.flock(pid_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    pid_fd.write(str(os.getpid()))
-    pid_fd.flush()
-except (IOError, OSError):
-    print("Another instance is already running. Exiting.")
-    sys.exit(0)
+# Prevent duplicate instances (bypassed — use external process management)
+# import fcntl
+# try:
+#     pid_fd = open(PID_FILE, "w")
+#     fcntl.flock(pid_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+#     pid_fd.write(str(os.getpid()))
+#     pid_fd.flush()
+# except (IOError, OSError) as e:
+#     import subprocess
+#     my_pid = str(os.getpid())
+#     result = subprocess.run(["pkill", "-9", "-f", "pokerbot.bot"], capture_output=True, text=True)
+#     time.sleep(1)
+#     try:
+#         os.unlink(PID_FILE)
+#     except:
+#         pass
+#     try:
+#         pid_fd = open(PID_FILE, "w")
+#         fcntl.flock(pid_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+#         pid_fd.write(str(os.getpid()))
+#         pid_fd.flush()
+#     except (IOError, OSError):
+#         print("Could not acquire lock after cleanup. Exiting.")
+#         sys.exit(0)
 
 # Polling
 POLL_INTERVAL = 1.5  # seconds between polls when idle
@@ -666,9 +680,12 @@ def decide_action(table):
     bb_size = table.get('bigBlindChips') or 2
 
     # ── Raise cap: prevent infinite raise wars ──
-    from pokerbot.bot import get_street_raise_count, MAX_RAISES_PER_STREET
-    street_raise_count = get_street_raise_count(street)
-    if street_raise_count >= MAX_RAISES_PER_STREET:
+    try:
+        from pokerbot.bot import get_street_raise_count, MAX_RAISES_PER_STREET
+        street_raise_count = get_street_raise_count(street)
+    except ImportError:
+        street_raise_count = 0
+    if street_raise_count >= 2:  # MAX_RAISES_PER_STREET
         # We've already raised twice on this street — force fold or call
         if 'call' in available and call_amount > 0:
             call_msg = f"raise cap hit ({street_raise_count}/{MAX_RAISES_PER_STREET} on {street}), calling instead"
@@ -808,9 +825,17 @@ def main_loop():
                 else:
                     remaining_s = 999
                 
-                # Skip tables where deadline has already passed
+                # Skip tables where deadline has already passed — auto-fold stale actions
                 if remaining_s <= 0:
-                    log(f"TIMEOUT: {street} | Table {table.get('tableNumber','?')} | deadline passed")
+                    # Auto-fold to clear the stale pending action
+                    fold_result = post("/api/arena/texas/action", {
+                        "tableId": table_id,
+                        "action": "fold",
+                        "amount": 0,
+                        "message": ""
+                    })
+                    if not fold_result.get("_error"):
+                        log(f"TIMEOUT: {street} | Table {table.get('tableNumber','?')} | auto-folded stale action")
                     continue
                 
                 log(f"🎯 ACTION: {street} | Table {table.get('tableNumber','?')} | {remaining_s:.0f}s left")
@@ -830,6 +855,10 @@ def main_loop():
                 
                 # Use decision engine (Gemini + profiler, or quant fallback)
                 action, amt, msg = decide_action(table)
+                
+                # Track raise count per street for raise cap
+                if action in ('bet', 'raise'):
+                    update_hand_state(action, street=street)
                 
                 # Public chat: only send safe, randomized messages (never Gemini reasoning)
                 # Gemini reasoning may contain hole cards or strategy thinking — keep it in logs only

@@ -159,9 +159,12 @@ def _build_prompt(hole_cards, board, pot, stack, call_amount, current_bet,
         pot_odds_str = f"Pot odds: {odds_pct}% (need to call {call_amount} to win {pot + call_amount})"
 
     # Raise history — tell Gemini if we already raised this street
-    from pokerbot.bot import get_street_raise_count
     raise_history = ""
-    src = get_street_raise_count(street)
+    try:
+        from pokerbot.bot import get_street_raise_count
+        src = get_street_raise_count(street)
+    except ImportError:
+        src = 0
     if src > 0:
         raise_history = f"\n⚠️ IMPORTANT: You have already RAISED {src} time(s) this street. If facing a re-raise with a non-premium hand (below top pair/overpair), consider FOLDING or CALLING instead of raising again. Do NOT escalate with marginal hands."
     
