@@ -157,6 +157,13 @@ def _build_prompt(hole_cards, board, pot, stack, call_amount, current_bet,
     if call_amount > 0 and pot > 0:
         odds_pct = round(call_amount / (pot + call_amount) * 100, 1)
         pot_odds_str = f"Pot odds: {odds_pct}% (need to call {call_amount} to win {pot + call_amount})"
+
+    # Raise history — tell Gemini if we already raised this street
+    from pokerbot.bot import get_street_raise_count
+    raise_history = ""
+    src = get_street_raise_count(street)
+    if src > 0:
+        raise_history = f"\n⚠️ IMPORTANT: You have already RAISED {src} time(s) this street. If facing a re-raise with a non-premium hand (below top pair/overpair), consider FOLDING or CALLING instead of raising again. Do NOT escalate with marginal hands."
     
     # Legal sizing constraints from API
     sizing_rules = ""
@@ -175,7 +182,7 @@ def _build_prompt(hole_cards, board, pot, stack, call_amount, current_bet,
     elif bb_stack <= 50:
         zone = "COMFORTABLE (25-50 BB): play solid TAG poker. Value bet made hands, control pot size with one-pair hands. No reckless bluffs."
     else:
-        zone = "DEEP (>50 BB): standard balanced poker. Open wide from late position, value bet aggressively with strong hands."
+        zone = "DEEP (>50 BB): standard balanced poker. Open wide from late position, value bet aggressively with strong hands. But do NOT raise-bet with marginal hands like K8s, Q9s, A4s facing resistance — one raise is enough."
 
     # Tournament-specific rule block (always included)
     tournament_rules = """TOURNAMENT RULES (always apply):
@@ -197,7 +204,7 @@ CURRENT SITUATION:
 - Current bet to call: {call_amount}
 - Your position: {pos_display}
 - Players in hand (including you): {num_opponents + 1}
-- {pot_odds_str}
+- {pot_odds_str}{raise_history}
 
 AVAILABLE ACTIONS: {allowed_str}
 

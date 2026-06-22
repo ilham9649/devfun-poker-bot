@@ -313,6 +313,7 @@ def reset_hand_state():
         'prev_action': 'check',
         'prev_equity': 0,
         'street': 'preflop',
+        'raise_count_per_street': {},  # {'Preflop': 1, 'Flop': 2, ...}
     }
 
 def update_hand_state(action, equity=0, street=None):
@@ -325,7 +326,17 @@ def update_hand_state(action, equity=0, street=None):
         _hand_state['equity'] = equity
     if action in ('bet', 'raise') and _hand_state['street'] in ('PreDeal', 'Preflop'):
         _hand_state['raised_preflop'] = True
+    # Track raise count per street
+    st = street or _hand_state.get('street', 'preflop')
+    if action in ('bet', 'raise'):
+        _hand_state['raise_count_per_street'][st] = _hand_state['raise_count_per_street'].get(st, 0) + 1
     _hand_state['last_action'] = action
+
+def get_street_raise_count(street):
+    st = street or _hand_state.get('street', 'preflop')
+    return _hand_state.get('raise_count_per_street', {}).get(st, 0)
+
+MAX_RAISES_PER_STREET = 2  # Cap raises per street to prevent infinite raise wars
 
 def get_hand_state():
     return _hand_state
@@ -367,7 +378,7 @@ def _classify_seat_action(prev_seat, curr_seat, prev_snap, bb_size):
     return None
 
 
-def _capture_opponent_actions(table, profiler_obj, our_agent_id, bb_size=2):
+def _capture_opponent_actions(table, profiler_obj, our_agent_id, bb_size=None):
     """Diff this table snapshot vs the prior one for this tableId and feed each
     inferred opponent action to the profiler. Best-effort: the LLM reader is
     robust to the residual noise; deterministic stats may under/over-count but
@@ -610,7 +621,7 @@ def choose_postflop_action(state):
 def decide_action(table):
     """Decision engine: Gemini 3.1 Flash Lite + profiler, falls back to quant_decision."""
     # Capture opponent actions seen since our last turn (cheap; off the LLM path).
-    _capture_opponent_actions(table, profiler, AGENT_ID)
+    _capture_opponent_actions(table, profiler, AGENT_ID, bb_size=table.get('bigBlindChips'))
     allowed_actions = table.get("allowedActions", {})
     available = allowed_actions.get("availableActions", [])
     street = table.get("street", "PreDeal")
@@ -651,7 +662,23 @@ def decide_action(table):
         pos_map = {1: 3, 2: 4, 3: 5, 4: 0, 5: 1, 6: 2}
         pos = pos_map.get(offset_from_dealer, 3)
     
-    bb_size = table.get("bigBlindChips") or 2
+    # Dynamic blind size from table (tournament may use 5/10, not 1/2)
+    bb_size = table.get('bigBlindChips') or 2
+
+    # ── Raise cap: prevent infinite raise wars ──
+    from pokerbot.bot import get_street_raise_count, MAX_RAISES_PER_STREET
+    street_raise_count = get_street_raise_count(street)
+    if street_raise_count >= MAX_RAISES_PER_STREET:
+        # We've already raised twice on this street — force fold or call
+        if 'call' in available and call_amount > 0:
+            call_msg = f"raise cap hit ({street_raise_count}/{MAX_RAISES_PER_STREET} on {street}), calling instead"
+            log(f"   ⚠️ {call_msg}")
+            return ('call', call_amount, call_msg)
+        elif 'check' in available:
+            return ('check', 0, f"raise cap hit ({street_raise_count}/{MAX_RAISES_PER_STREET} on {street}), checking")
+        else:
+            return ('fold', 0, f"raise cap hit ({street_raise_count}/{MAX_RAISES_PER_STREET} on {street}), folding")
+
     # Try Gemini + profiler first, fallback to quant_decision
     action, amount, msg, extra = decide_with_profiling(
         hole_cards, board, available, pot, stack,
@@ -828,21 +855,24 @@ def main_loop():
                 
                 if result.get("_error"):
                     log(f"   Action rejected: {result.get('_body','?')}")
-                # Fallback: if raise rejected, try call/check/fold instead of retrying
-                if action == "raise":
-                    available = allowed_actions.get("availableActions", [])
-                    if "call" in available:
-                        call_amt = allowed_actions.get("callAmount", 0) or allowed_actions.get("callChips", 0) or 0
-                        fb = post("/api/arena/texas/action", {"tableId": table_id, "action": "call", "amount": call_amt, "message": "adjusting"})
-                        if not fb.get("_error"):
-                            log(f"   Fallback: call {call_amt}")
-                    elif "check" in available:
-                        post("/api/arena/texas/action", {"tableId": table_id, "action": "check", "amount": 0, "message": ""})
-                        log(f"   Fallback: check")
-                    elif "fold" in available:
-                        post("/api/arena/texas/action", {"tableId": table_id, "action": "fold", "amount": 0, "message": ""})
-                        log(f"   Fallback: fold")
-                    continue  # skip to next table
+                    # Fallback: if raise rejected, try all-in or call instead of retrying
+                    if action == "raise" and "available" in allowed_actions:
+                        available = allowed_actions.get("availableActions", [])
+                        if "call" in available:
+                            call_amt = allowed_actions.get("callAmount", 0) or allowed_actions.get("callChips", 0) or 0
+                            fallback_payload = {"tableId": table_id, "action": "call", "amount": call_amt, "message": "adjusting sizing"}
+                            fb_result = post("/api/arena/texas/action", fallback_payload)
+                            if not fb_result.get("_error"):
+                                log(f"   ✓ Fallback: call {call_amt}")
+                            else:
+                                # Last resort: check/fold
+                                if "check" in available:
+                                    check_result = post("/api/arena/texas/action", {"tableId": table_id, "action": "check", "amount": 0, "message": ""})
+                                    log(f"   ✓ Fallback: check")
+                                elif "fold" in available:
+                                    post("/api/arena/texas/action", {"tableId": table_id, "action": "fold", "amount": 0, "message": ""})
+                                    log(f"   ✓ Fallback: fold (raise rejected, no call/check)")
+                    continue  # move to next table, don't retry same action this cycle
                 
                 # Update state
                 part = result.get("participant", {})
