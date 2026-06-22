@@ -651,11 +651,12 @@ def decide_action(table):
         pos_map = {1: 3, 2: 4, 3: 5, 4: 0, 5: 1, 6: 2}
         pos = pos_map.get(offset_from_dealer, 3)
     
+    bb_size = table.get("bigBlindChips") or 2
     # Try Gemini + profiler first, fallback to quant_decision
     action, amount, msg, extra = decide_with_profiling(
         hole_cards, board, available, pot, stack,
         call_amount, current_bet, num_opp, street,
-        pos, table, profiler, bb_size=2
+        pos, table, profiler, bb_size=bb_size
     )
     
     return (action, amount, msg)
@@ -827,6 +828,21 @@ def main_loop():
                 
                 if result.get("_error"):
                     log(f"   Action rejected: {result.get('_body','?')}")
+                # Fallback: if raise rejected, try call/check/fold instead of retrying
+                if action == "raise":
+                    available = allowed_actions.get("availableActions", [])
+                    if "call" in available:
+                        call_amt = allowed_actions.get("callAmount", 0) or allowed_actions.get("callChips", 0) or 0
+                        fb = post("/api/arena/texas/action", {"tableId": table_id, "action": "call", "amount": call_amt, "message": "adjusting"})
+                        if not fb.get("_error"):
+                            log(f"   Fallback: call {call_amt}")
+                    elif "check" in available:
+                        post("/api/arena/texas/action", {"tableId": table_id, "action": "check", "amount": 0, "message": ""})
+                        log(f"   Fallback: check")
+                    elif "fold" in available:
+                        post("/api/arena/texas/action", {"tableId": table_id, "action": "fold", "amount": 0, "message": ""})
+                        log(f"   Fallback: fold")
+                    continue  # skip to next table
                 
                 # Update state
                 part = result.get("participant", {})
