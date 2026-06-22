@@ -38,7 +38,7 @@ GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_M
 POSITION_NAMES = {0: "UTG", 1: "HJ", 2: "CO", 3: "BTN", 4: "SB", 5: "BB", 6: "EP"}
 
 # Maximum time we'll wait for Gemini (playground has ~3s deadlines)
-GEMINI_TIMEOUT = 2.0
+GEMINI_TIMEOUT = 4.0
 
 # Statistics tracking
 stats = {"gemini_calls": 0, "gemini_success": 0, "gemini_timeout": 0,

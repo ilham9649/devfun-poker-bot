@@ -372,14 +372,14 @@ def is_bluff_3bet_hand(hole, position):
     return False
 
 def is_4bet_stack_off_hand(hole):
-    """KK+, AK - stack off to a 5-bet."""
+    """QQ+, AK, JJ - stack off to a 5-bet. Broader range to avoid ICM-suicide."""
     key = preflop_hand_key(hole)
-    return key in ('KK', 'AA', 'AKs', 'AKo')
+    return key in ('KK', 'AA', 'AKs', 'AKo', 'QQ', 'JJ')
 
 def should_fold_to_5bet(hole):
-    """QQ-/AK (non suited) - fold to 5-bet pressure."""
+    """Only TT- and weak suited aces fold to 5-bet. Keep QQ+/AKs/JJ in."""
     key = preflop_hand_key(hole)
-    return key in ('QQ', 'JJ', 'TT', '99', 'AKo', 'AQs', 'AQo')
+    return key in ('TT', '99', '88', 'AQo', 'AJs')
 
 # ── 3-bet/4-bet Sizing ──
 
@@ -1061,13 +1061,16 @@ def _preflop_decision(hole, allowed_actions, pot, stack, call_amount,
         is_4bet = call_amount > bb_size * 12
 
         if is_4bet:
-            # Facing 4-bet: stack off KK+/AKs, fold most else
+            # Facing 4-bet: stack off QQ+/AKs, call AQ/TT/JJ, fold rest
             if is_4bet_stack_off_hand(hole):
                 return ('raise', stack, f"5-bet jam - {key} vs 4-bet", eq)
+            # AQs/TT/JJ: call 4-bet, don't nit-fold
+            if key in ('AQs', 'AQo', 'TT', 'JJ', '99') and eq >= 0.55:
+                return ('call', call_amount, f"call 4-bet - {key}, {eq*100:.0f}% eq", eq)
             if should_fold_to_5bet(hole):
                 if 'fold' in allowed_actions:
                     return ('fold', 0, f"fold to 4-bet - {key} can't stand the heat", eq)
-            # Mixed: AQs/TT can call
+            # Mixed: hands with 60%+ eq can call
             if eq >= 0.60:
                 return ('call', call_amount, f"call 4-bet - {key}, {eq*100:.0f}% eq", eq)
             if 'fold' in allowed_actions:
@@ -1078,16 +1081,22 @@ def _preflop_decision(hole, allowed_actions, pot, stack, call_amount,
             if is_4bet_stack_off_hand(hole):
                 four_amt = four_bet_size(call_amount, stack)
                 return ('raise', four_amt, f"4-bet - {key} vs 3-bet", eq)
+            # AQs/AKo: call IP, small 3-bet OOP
+            if key in ('AQs', 'AQo', 'AKs', 'AKo'):
+                if in_position:
+                    return ('call', call_amount, f"call 3-bet IP - {key}, {eq*100:.0f}% eq", eq)
+                elif call_amount <= stack * 0.15:
+                    return ('call', call_amount, f"call 3-bet small - {key}, {eq*100:.0f}% eq", eq)
+                # OOP vs large 3-bet: still call with AQ+, don't nit-fold
+                return ('call', call_amount, f"call 3-bet - {key}, {eq*100:.0f}% eq", eq)
             if should_fold_to_5bet(hole) and eq >= 0.62:
-                # QQ/AK: call the 3-bet in position, fold OOP
+                # QQ/JJ: always call 3-bet, don't fold
                 if in_position:
                     return ('call', call_amount, f"call 3-bet IP - {key}, {eq*100:.0f}% eq", eq)
                 else:
-                    # OOP with QQ/AK vs 3-bet: fold or jam based on sizing
-                    if call_amount <= stack * 0.15:
+                    if call_amount <= stack * 0.20:
                         return ('call', call_amount, f"call 3-bet - {key}, small sizing", eq)
-                    if 'fold' in allowed_actions:
-                        return ('fold', 0, f"fold 3-bet OOP - {key}", eq)
+                    return ('call', call_amount, f"call 3-bet OOP - {key}, {eq*100:.0f}% eq", eq)
             if tier in ('playable',) and in_position and call_amount <= pot * 0.3:
                 return ('call', call_amount, f"call 3-bet - {key}, IP with decent hand", eq)
             if 'fold' in allowed_actions:
