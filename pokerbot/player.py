@@ -165,7 +165,29 @@ def _build_prompt(hole_cards, board, pot, stack, call_amount, current_bet,
     if "raise" in allowed_actions and min_raise_to:
         sizing_rules += f"\n- If raising: minimum legal raise to is {min_raise_to} chips"
     
-    prompt = f"""You are an expert poker AI playing 6-max No-Limit Texas Hold'em in an online tournament playground. Make decisions based on pot odds, implied odds, opponent tendencies, and proper poker strategy.
+    # Stack depth zone for tournament-aware strategy
+    if bb_stack <= 10:
+        zone = "CRITICAL (<10 BB): push-or-fold only. Open-shove premiums (88+, ATs+, KQs, AQ+). Fold everything else unless getting excellent pot odds. Never raise-fold."
+    elif bb_stack <= 15:
+        zone = "SHORT (10-15 BB): tight-aggressive. Open-shove wide value range. Never 3-bet as a bluff. Fold marginal hands to any raise. Survival matters."
+    elif bb_stack <= 25:
+        zone = "MEDIUM (15-25 BB): cautious. Value bet strong hands, check/call medium hands. Do not 3-bet light. Avoid big pots without the nuts. Protect your stack."
+    elif bb_stack <= 50:
+        zone = "COMFORTABLE (25-50 BB): play solid TAG poker. Value bet made hands, control pot size with one-pair hands. No reckless bluffs."
+    else:
+        zone = "DEEP (>50 BB): standard balanced poker. Open wide from late position, value bet aggressively with strong hands."
+
+    # Tournament-specific rule block (always included)
+    tournament_rules = """TOURNAMENT RULES (always apply):
+- This is a TOURNAMENT, not a cash game. Chips lost cannot be rebought easily. Survival matters.
+- NEVER 3-bet or 4-bet with weak/medium hands (A2s, A3s, KJo, QJo, etc). Only 3-bet with premiums (JJ+, AQ+, AK).
+- Do NOT stack off with one-pair hands (top pair, etc) unless very short-stacked (<15 BB) or facing extreme pressure.
+- When facing a 3-bet, fold everything except JJ+, AQs, AK. Do not 4-bet light.
+- On wet/draw-heavy boards with one-pair or two-pair, prefer check-call over bet-bet-bet. Do not bloated the pot unnecessarily."""
+
+    prompt = f"""You are an expert poker AI playing 6-max No-Limit Texas Hold'em in an online POKER TOURNAMENT. Make decisions based on pot odds, implied odds, opponent tendencies, and proper TOURNAMENT poker strategy.
+
+STACK DEPTH: {bb_stack} BB — {zone}
 
 CURRENT SITUATION:
 - Your hand: {hole_display}
@@ -182,7 +204,9 @@ AVAILABLE ACTIONS: {allowed_str}
 OPPONENT PROFILES (from real-time observation):
 {opponent_profiles_text}
 
-Based on all the above, make the optimal decision.
+{tournament_rules}
+
+Based on all the above, make the optimal TOURNAMENT decision.
 
 Return ONLY valid JSON (no markdown, no extra text):
 {{"action": "fold|check|call|bet|raise", "amount": <number>, "confidence": <0.0-1.0>, "reasoning": "<one sentence>"}}
@@ -190,7 +214,7 @@ Return ONLY valid JSON (no markdown, no extra text):
 Rules for bet/raise amounts:
 - If betting: size between 0.33x and 1.0x the pot{sizing_rules}
 - If raising: size between 2.0x and 4.0x the current bet{sizing_rules}
-- If all-in: use "all-in" as action, set amount to your stack
+- If all-in: use "all-in" as action, set amount to your stack. ONLY go all-in with strong made hands or when short-stacked (<15 BB) with a decent hand.
 - For fold/check/call: amount = call_amount or 0"""
 
     return prompt
