@@ -796,6 +796,14 @@ def get_chat(action, strength=0):
 
 # ── Main Loop ────────────────────────────────────────────
 
+def join_competition():
+    """Enter the competition: matchmaking join, or a fresh benchmark run
+    for eval competitions (which have no lobby)."""
+    if GAME_MODE == "eval":
+        return post("/api/arena/texas/benchmark/start", {"competitionId": COMPETITION_ID})
+    return post("/api/arena/texas/join", {"competitionId": COMPETITION_ID})
+
+
 def main_loop():
     log("=== OpenClaw Poker Bot Started ===")
     log(f"Competition: {COMPETITION_ID} | Bankroll: 1000 chips | Max rebuys: 5")
@@ -1019,8 +1027,8 @@ def main_loop():
                             # No-rebuy competition (e.g. eval). Try one fresh
                             # join in case a new run is allowed; otherwise the
                             # run is over — stop instead of hammering the API.
-                            log("Rebuy disabled here. Attempting fresh join...")
-                            join_resp = post("/api/arena/texas/join", {"competitionId": COMPETITION_ID})
+                            log("Rebuy disabled here. Attempting fresh join/run...")
+                            join_resp = join_competition()
                             if join_resp.get("_error"):
                                 log(f"Fresh join refused: {join_resp.get('_body','?')}")
                                 log("Run complete for this competition. Stopping.")
@@ -1040,11 +1048,13 @@ def main_loop():
             # "available" = has chips, not seated. "unknown" = never joined
             # this competition (participant is null) — join covers both.
             if not joined and chip_state in ("available", "unknown"):
-                # Check lobby first
-                lobby = get(f"/api/arena/texas/lobby", {"competitionId": COMPETITION_ID})
+                # Check lobby first (benchmark/eval competitions have none)
+                lobby = {} if GAME_MODE == "eval" else get(f"/api/arena/texas/lobby", {"competitionId": COMPETITION_ID})
                 if lobby.get("_error") or lobby.get("lobby") is None:
                     log("Joining queue...")
-                    join_resp = post("/api/arena/texas/join", {"competitionId": COMPETITION_ID})
+                    join_resp = join_competition()
+                    if join_resp.get("_error"):
+                        log(f"Join refused: {join_resp.get('_body','?')}")
                     if join_resp.get("kind") == "queued":
                         pos = join_resp.get("lobby", {}).get("position", "?")
                         total = join_resp.get("lobby", {}).get("total", "?")
