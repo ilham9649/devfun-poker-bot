@@ -21,6 +21,13 @@ BASE = "https://arena.dev.fun"
 # Eval:    seed_poker_eval_s1 = Eval S1
 COMPETITION_ID = os.environ.get("ARENA_COMPETITION_ID", "cmqf827h30u7dfca3x2aqvzjv")
 
+# Game mode drives strategy framing and eval-only API fields.
+#   eval       — PVE benchmark: reset-stack hands, no rebuy, maximize bb/100
+#   tournament — survival matters, ICM-aware
+# Override via ARENA_GAME_MODE; auto-detects eval competitions by ID.
+GAME_MODE = os.environ.get("ARENA_GAME_MODE") or (
+    "eval" if COMPETITION_ID.startswith("seed_poker_eval") else "tournament")
+
 # Workspace: where state/pid/coach files live. Defaults to repo root.
 # Override via ARENA_WORKSPACE for multi-instance (e.g. eval).
 WORKSPACE = os.environ.get("ARENA_WORKSPACE", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -397,6 +404,7 @@ def _capture_opponent_actions(table, profiler_obj, our_agent_id, bb_size=None):
     inferred opponent action to the profiler. Best-effort: the LLM reader is
     robust to the residual noise; deterministic stats may under/over-count but
     never crash."""
+    bb_size = bb_size or 2  # table payload may omit bigBlindChips
     table_id = table.get("tableId")
     if table_id is None:
         return
@@ -667,14 +675,26 @@ def decide_action(table):
     # Compute call amount
     call_amount = allowed_actions.get("callAmount", 0) or allowed_actions.get("callChips", 0) or 0
     
-    # Estimate position
+    # Estimate position from offset relative to the dealer button.
+    # Works for any table size (heads-up through 9-max), not just 6-max.
     dealer_seat = table.get("dealerSeatNumber", 0) or 0
     pos = 3
     if self_seat and dealer_seat:
-        seats_count = len(table.get("seats", []))
+        seats_count = max(len(table.get("seats", [])), 2)
         offset_from_dealer = (self_seat - dealer_seat) % seats_count
-        pos_map = {1: 3, 2: 4, 3: 5, 4: 0, 5: 1, 6: 2}
-        pos = pos_map.get(offset_from_dealer, 3)
+        if seats_count == 2:
+            # Heads-up: dealer is BTN/SB, the other seat is BB
+            pos = 3 if offset_from_dealer == 0 else 5
+        elif offset_from_dealer == 0:
+            pos = 3  # BTN
+        elif offset_from_dealer == 1:
+            pos = 4  # SB
+        elif offset_from_dealer == 2:
+            pos = 5  # BB
+        else:
+            # Remaining seats spread earliest→latest over UTG/HJ/CO
+            rel = (offset_from_dealer - 3) / max(seats_count - 3, 1)
+            pos = 0 if rel < 0.34 else (1 if rel < 0.67 else 2)
     
     # Dynamic blind size from table (tournament may use 5/10, not 1/2)
     bb_size = table.get('bigBlindChips') or 2
@@ -700,7 +720,7 @@ def decide_action(table):
     action, amount, msg, extra = decide_with_profiling(
         hole_cards, board, available, pot, stack,
         call_amount, current_bet, num_opp, street,
-        pos, table, profiler, bb_size=bb_size
+        pos, table, profiler, bb_size=bb_size, game_mode=GAME_MODE
     )
     
     return (action, amount, msg)
@@ -802,10 +822,12 @@ def main_loop():
             time.sleep(5)
             continue
         
-        tables = data.get("tables", [])
-        participant = data.get("participant", {})
-        runner = data.get("runner", {})
-        
+        # participant/runner come back as JSON null when we've never joined
+        # this competition — .get(key, {}) would return None, not {}.
+        tables = data.get("tables") or []
+        participant = data.get("participant") or {}
+        runner = data.get("runner") or {}
+
         chip_state = participant.get("chipState", "unknown")
         total_chips = participant.get("totalChips", 0)
         
@@ -853,8 +875,19 @@ def main_loop():
                 if board:
                     log(f"   Board: {' '.join(board)} | Pot: {table.get('potChips',0)}")
                 
-                # Use decision engine (Gemini + profiler, or quant fallback)
-                action, amt, msg = decide_action(table)
+                # Use decision engine (Gemini + profiler, or quant fallback).
+                # Never let a decision bug kill the polling loop — fall back
+                # to a safe action instead of crashing mid-hand.
+                try:
+                    action, amt, msg = decide_action(table)
+                except Exception as e:
+                    _aa = table.get("allowedActions") or {}
+                    _avail = _aa.get("availableActions") or []
+                    if "check" in _avail:
+                        action, amt, msg = ("check", 0, f"engine error ({type(e).__name__}), safe check")
+                    else:
+                        action, amt, msg = ("fold", 0, f"engine error ({type(e).__name__}), safe fold")
+                    log(f"   ⚠️ decide_action crashed: {e!r} — {action} instead")
                 
                 # Track raise count per street for raise cap
                 if action in ('bet', 'raise'):
@@ -874,7 +907,7 @@ def main_loop():
                     "message": chat
                 }
                 # Eval/benchmark requires reasoning field (separate from chat message, max 150 chars)
-                if COMPETITION_ID == "seed_poker_eval_s1":
+                if GAME_MODE == "eval":
                     reasoning = msg.replace("🎯 Gemini: ", "").replace("🔧 quant: ", "")
                     if len(reasoning) > 150:
                         reasoning = reasoning[:147] + "..."
@@ -884,11 +917,12 @@ def main_loop():
                 
                 if result.get("_error"):
                     log(f"   Action rejected: {result.get('_body','?')}")
-                    # Fallback: if raise rejected, try all-in or call instead of retrying
-                    if action == "raise" and "available" in allowed_actions:
-                        available = allowed_actions.get("availableActions", [])
+                    # Fallback: if raise rejected, try call/check/fold instead of retrying
+                    rejected_aa = table.get("allowedActions") or {}
+                    if action == "raise":
+                        available = rejected_aa.get("availableActions") or []
                         if "call" in available:
-                            call_amt = allowed_actions.get("callAmount", 0) or allowed_actions.get("callChips", 0) or 0
+                            call_amt = rejected_aa.get("callAmount", 0) or rejected_aa.get("callChips", 0) or 0
                             fallback_payload = {"tableId": table_id, "action": "call", "amount": call_amt, "message": "adjusting sizing"}
                             fb_result = post("/api/arena/texas/action", fallback_payload)
                             if not fb_result.get("_error"):
@@ -926,34 +960,37 @@ def main_loop():
                     
                     # Feed hand result to profiler + run the throttled LLM
                     # opponent-reader (off the decision path — the hand is over).
-                    gemini_on = bool(os.environ.get("GEMINI_DEEP_RESEARCH_API_KEY", ""))
+                    try:
+                        gemini_on = bool(os.environ.get("GEMINI_DEEP_RESEARCH_API_KEY", ""))
                     # Opponents who reached a real showdown (a handName was revealed).
-                    showdown_ids = {w.get("agentId") for w in winners if w.get("handName")}
-                    llm_refreshes = 0
-                    for seat in table.get("seats", []):
-                        aid = seat.get("agentId", "")
-                        if not aid or aid == AGENT_ID:
-                            continue
-                        aname = seat.get("agentName", "")
-                        prof = profiler.get_or_create(aid, aname)
-                        prof.record_hand_observed()
-                        # Showdown-revealed hand for this opponent. Only winners'
-                        # handNames are exposed by the API; losers' cards stay hidden.
-                        if aid in showdown_ids:
-                            w = next((x for x in winners if x.get("agentId") == aid), {})
-                            prof.record_showdown(
-                                hand_name=w.get("handName", ""),
-                                won=True,
-                                pot=w.get("amount", 0),
-                                street_reached=tbl.get("street", "River"),
-                            )
-                        # Throttled re-profile (showdown OR every N hands); cap cost/hand.
-                        if llm_refreshes < 2 and refresh_opponent_llm_profile(
-                                prof, showdown_triggered=(aid in showdown_ids),
-                                gemini_enabled=gemini_on):
-                            llm_refreshes += 1
-                            log(f"🧠 LLM profiled {aname or aid[:8]}: {prof.llm_summary[:60]}")
-                    profiler.save()
+                        showdown_ids = {w.get("agentId") for w in winners if w.get("handName")}
+                        llm_refreshes = 0
+                        for seat in table.get("seats", []):
+                            aid = seat.get("agentId", "")
+                            if not aid or aid == AGENT_ID:
+                                continue
+                            aname = seat.get("agentName", "")
+                            prof = profiler.get_or_create(aid, aname)
+                            prof.record_hand_observed()
+                            # Showdown-revealed hand for this opponent. Only winners'
+                            # handNames are exposed by the API; losers' cards stay hidden.
+                            if aid in showdown_ids:
+                                w = next((x for x in winners if x.get("agentId") == aid), {})
+                                prof.record_showdown(
+                                    hand_name=w.get("handName", ""),
+                                    won=True,
+                                    pot=w.get("amount", 0),
+                                    street_reached=tbl.get("street", "River"),
+                                )
+                            # Throttled re-profile (showdown OR every N hands); cap cost/hand.
+                            if llm_refreshes < 2 and refresh_opponent_llm_profile(
+                                    prof, showdown_triggered=(aid in showdown_ids),
+                                    gemini_enabled=gemini_on):
+                                llm_refreshes += 1
+                                log(f"🧠 LLM profiled {aname or aid[:8]}: {prof.llm_summary[:60]}")
+                        profiler.save()
+                    except Exception as e:
+                        log(f"   ⚠️ profiler post-hand update failed: {e!r}")
                     # Drop the per-table snapshot so the next hand starts clean
                     # (its first snapshot then has no predecessor → blinds aren't diffed).
                     _last_table_snapshot.pop(table_id, None)
@@ -978,8 +1015,21 @@ def main_loop():
                         if not rebuy.get("_error"):
                             log("Rebuy successful. Rejoining...")
                             joined = False  # force rejoin
+                        elif "not enabled" in str(rebuy.get("_body", "")).lower():
+                            # No-rebuy competition (e.g. eval). Try one fresh
+                            # join in case a new run is allowed; otherwise the
+                            # run is over — stop instead of hammering the API.
+                            log("Rebuy disabled here. Attempting fresh join...")
+                            join_resp = post("/api/arena/texas/join", {"competitionId": COMPETITION_ID})
+                            if join_resp.get("_error"):
+                                log(f"Fresh join refused: {join_resp.get('_body','?')}")
+                                log("Run complete for this competition. Stopping.")
+                                break
+                            log("Fresh join accepted — new run starting.")
+                            joined = True
                         else:
                             log(f"Rebuy failed: {rebuy}")
+                            time.sleep(10)
                     else:
                         log("Out of rebuys. Stopping.")
                         break
@@ -987,7 +1037,9 @@ def main_loop():
                     log(f"Busted status but totalChips={total} >= buyIn. Rejoining...")
                     joined = False
             
-            if not joined and chip_state == "available":
+            # "available" = has chips, not seated. "unknown" = never joined
+            # this competition (participant is null) — join covers both.
+            if not joined and chip_state in ("available", "unknown"):
                 # Check lobby first
                 lobby = get(f"/api/arena/texas/lobby", {"competitionId": COMPETITION_ID})
                 if lobby.get("_error") or lobby.get("lobby") is None:

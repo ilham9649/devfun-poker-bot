@@ -475,8 +475,13 @@ def exploitation_adjustment(opponent_style, hand_tier_val, in_position, board_te
 
     return adjustments.get(opponent_style, adjustments['unknown'])
 
-def get_fold_equity(opponent_style, board_texture='dry', in_position=True):
-    """Get fold equity estimate based on opponent and board texture."""
+def get_fold_equity(opponent_style, board_texture='dry', in_position=True,
+                    num_opponents=1):
+    """Get fold equity estimate based on opponent and board texture.
+
+    num_opponents: ALL of them must fold for a bluff to work, so fold
+    equity compounds (p_fold ** n) in multi-way pots.
+    """
     base = {
         'Nit': 0.65, 'Station': 0.15, 'LAG': 0.30,
         'Weak-Tight': 0.60, 'TAG': 0.40, 'unknown': 0.40,
@@ -490,7 +495,13 @@ def get_fold_equity(opponent_style, board_texture='dry', in_position=True):
     if in_position:
         base *= 1.05
 
-    return min(base, 0.85)
+    base = min(base, 0.85)
+
+    # Every opponent must fold — bluffing into 3-way+ pots rarely works
+    if num_opponents > 1:
+        base = base ** num_opponents
+
+    return base
 
 # ── Multi-street Postflop ──
 
@@ -629,7 +640,8 @@ def postflop_decision(hole, board, allowed_actions, pot, stack, call_amount=0,
     draw_eq = estimate_draw_equity(hole, board, num_opponents)
     combined_eq = equity + draw_eq * 0.5  # blend raw equity with draw potential
     texture = classify_board_texture(board)
-    fold_eq = get_fold_equity(opponent_style, texture, in_position)
+    fold_eq = get_fold_equity(opponent_style, texture, in_position,
+                              num_opponents=num_opponents)
 
     strength, hand_type, _ = evaluate_hand(hole, board)
 

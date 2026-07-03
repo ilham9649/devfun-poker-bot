@@ -141,7 +141,7 @@ def _format_hand_history(table_state: dict) -> str:
 def _build_prompt(hole_cards, board, pot, stack, call_amount, current_bet,
                   allowed_actions, street, num_opponents, position,
                   opponent_profiles_text, bb_size, table_state,
-                  min_bet=None, min_raise_to=None) -> str:
+                  min_bet=None, min_raise_to=None, game_mode="tournament") -> str:
     """Build the complete prompt for Gemini."""
     
     hole_display = " ".join(hole_cards) if hole_cards else "?"
@@ -177,27 +177,54 @@ def _build_prompt(hole_cards, board, pot, stack, call_amount, current_bet,
     
     # Stack depth zone for tournament-aware strategy
     if bb_stack <= 10:
-        zone = "CRITICAL (<10 BB): push-or-fold only. Open-shove premiums (88+, ATs+, KQs, AQ+). Fold everything else unless getting excellent pot odds. Never raise-fold."
+        zone = "CRITICAL (<10 BB): push-or-fold. Shove ANY ace, any pair, KQ/KJ/QT, any suited connector T9s+. Fold only trash (72o, 62o, 53o)."
     elif bb_stack <= 15:
-        zone = "SHORT (10-15 BB): tight-aggressive. Open-shove wide value range. Never 3-bet as a bluff. Fold marginal hands to any raise. Survival matters."
+        zone = "SHORT (10-15 BB): shove-or-fold. Shove AT+, KJ+, QT+, any pair 55+, any suited ace, suited connectors JTs+. Open-shove from late position with anything 20%+ equity. Never limp."
     elif bb_stack <= 25:
-        zone = "MEDIUM (15-25 BB): cautious. Value bet strong hands, check/call medium hands. Do not 3-bet light. Avoid big pots without the nuts. Protect your stack."
+        zone = "MEDIUM (15-25 BB): tight-aggressive. Open-raise AT+, KJ+, QJ+, any pair, A2s+, KTs+, QTs+. Shove JJ+/AK/AQs vs 3-bets. Do NOT limp. Play suited connectors and broadways."
     elif bb_stack <= 50:
-        zone = "COMFORTABLE (25-50 BB): play solid TAG poker. Value bet made hands, control pot size with one-pair hands. No reckless bluffs."
+        zone = "COMFORTABLE (25-50 BB): solid TAG. Open wide from late position (any ace, K9+, Q9+, connectors). Do NOT fold KQs, A8s, T8s to small raises."
     else:
-        zone = "DEEP (>50 BB): standard balanced poker. Open wide from late position, value bet aggressively with strong hands. But do NOT raise-bet with marginal hands like K8s, Q9s, A4s facing resistance — one raise is enough."
+        zone = "DEEP (>50 BB): balanced poker. Open wide late position, value bet strong hands. One raise max with marginal hands (K8s, Q9s) facing resistance."
 
-    # Tournament-specific rule block (always included)
+    # Tournament-specific rule block
     tournament_rules = """TOURNAMENT RULES (always apply):
 - This is a TOURNAMENT, not a cash game. Chips lost cannot be rebought easily. Survival matters.
 - NEVER 3-bet or 4-bet with weak/medium hands (A2s, A3s, KJo, QJo, etc). Only 3-bet with premiums (JJ+, AQ+, AK).
 - Do NOT stack off with one-pair hands (top pair, etc) unless very short-stacked (<15 BB) or facing extreme pressure.
 - When facing a 3-bet, fold everything except JJ+, AQs, AK. Do not 4-bet light.
-- On wet/draw-heavy boards with one-pair or two-pair, prefer check-call over bet-bet-bet. Do not bloated the pot unnecessarily."""
+- On wet/draw-heavy boards with one-pair or two-pair, prefer check-call over bet-bet-bet. Do not bloat the pot unnecessarily.
+- KJo, QJo, K8s, A4s, A7s are MARGINAL hands — NOT strong. Do not raise-war with these. One raise is the absolute maximum; if re-raised, fold.
+- If you have already raised once and face a re-raise with anything less than QQ/AK, FOLD. Do not keep raising."""
 
-    prompt = f"""You are an expert poker AI playing 6-max No-Limit Texas Hold'em in an online POKER TOURNAMENT. Make decisions based on pot odds, implied odds, opponent tendencies, and proper TOURNAMENT poker strategy.
+    # Eval/PVE rule block: stacks reset every hand, opponents are fixed house
+    # bots measured (~1M hands) at VPIP 22 / PFR 17 / AF 2.0 / WTSD 93%.
+    # They fold a lot preflop but almost NEVER fold once they see a flop.
+    eval_rules = """PVE BENCHMARK RULES (this is NOT a tournament):
+- Stacks RESET every hand. Busting a hand costs nothing beyond the chips in it. There is NO survival concern, NO ICM. Your ONLY goal: maximize average chips won per hand.
+- The opponents are house bots with a known, fixed profile: they fold ~78% of hands preflop, but once they see a flop they go to showdown ~93% of the time. They are calling stations postflop.
+- Therefore: DO NOT BLUFF postflop. Bluffs are pure fire vs. stations. No bluff c-bets, no barreling with air, no river bluffs.
+- VALUE BET RELENTLESSLY: any top pair or better, bet 60-100% pot on flop, turn AND river. They will call with worse. Thin value is king: second pair good kicker is often a value bet too.
+- Preflop: attack their folds. Open-raise wide (any pair, any ace, any two broadway, suited connectors), 3-bet premiums big for value (they call 3-bets too wide).
+- With draws: take free cards or call small bets; do not semi-bluff big (they don't fold).
+- Fold weak made hands to their big aggression — when a station raises, they have it."""
 
-STACK DEPTH: {bb_stack} BB — {zone}
+    if game_mode == "eval":
+        rules_block = eval_rules
+        game_label = "a PVE POKER BENCHMARK against fixed house bots (reset-stack hands, scored in bb/100)"
+        zone_line = f"STACK DEPTH: {bb_stack} BB — stacks reset every hand; play pure chip-EV maximization, no survival adjustments."
+    else:
+        rules_block = tournament_rules
+        game_label = "an online POKER TOURNAMENT"
+        zone_line = f"STACK DEPTH: {bb_stack} BB — {zone}"
+
+    heads_up_note = ""
+    if num_opponents == 1:
+        heads_up_note = "\nHEADS-UP POT: ranges are MUCH wider — any pair, any ace, king-high are strong. Do not play fit-or-fold."
+
+    prompt = f"""You are an expert poker AI playing No-Limit Texas Hold'em in {game_label}. Make decisions based on pot odds, implied odds, opponent tendencies, and maximum-EV strategy for this format.
+
+{zone_line}{heads_up_note}
 
 CURRENT SITUATION:
 - Your hand: {hole_display}
@@ -214,9 +241,9 @@ AVAILABLE ACTIONS: {allowed_str}
 OPPONENT PROFILES (from real-time observation):
 {opponent_profiles_text}
 
-{tournament_rules}
+{rules_block}
 
-Based on all the above, make the optimal TOURNAMENT decision.
+Based on all the above, make the maximum-EV decision for this format.
 
 Return ONLY valid JSON (no markdown, no extra text):
 {{"action": "fold|check|call|bet|raise", "amount": <number>, "confidence": <0.0-1.0>, "reasoning": "<one sentence>"}}
@@ -234,7 +261,8 @@ Rules for bet/raise amounts:
 
 def gemini_decision(hole_cards, board, pot, stack, call_amount, current_bet,
                     allowed_actions, street, num_opponents, position,
-                    opponent_profiles_text, bb_size=2, table_state=None) -> tuple:
+                    opponent_profiles_text, bb_size=2, table_state=None,
+                    game_mode="tournament") -> tuple:
     """
     Make a poker decision using Gemini 3.1 Flash Lite.
     
@@ -257,7 +285,7 @@ def gemini_decision(hole_cards, board, pot, stack, call_amount, current_bet,
     prompt = _build_prompt(hole_cards, board, pot, stack, call_amount,
                           current_bet, allowed_actions, street, num_opponents,
                           position, opponent_profiles_text, bb_size, table_state,
-                          min_bet, min_raise_to)
+                          min_bet, min_raise_to, game_mode=game_mode)
     
     result = _call_gemini(prompt)
     
@@ -362,7 +390,7 @@ Return ONLY valid JSON (no markdown, no extra text):
 def decide_with_profiling(hole_cards, board, allowed_actions, pot, stack,
                           call_amount, current_bet, num_opponents, street,
                           position, table_state, profiler: Profiler,
-                          bb_size=2) -> tuple:
+                          bb_size=2, game_mode="tournament") -> tuple:
     """
     Main decision function. Uses Gemini + profiler, falls back to quant_decision.
     
@@ -387,7 +415,7 @@ def decide_with_profiling(hole_cards, board, allowed_actions, pot, stack,
         action, amount, reasoning, confidence = gemini_decision(
             hole_cards, board, pot, stack, call_amount, current_bet,
             allowed_actions, street, num_opponents, position,
-            opponent_text, bb_size, table_state
+            opponent_text, bb_size, table_state, game_mode=game_mode
         )
         
         if action is not None:
