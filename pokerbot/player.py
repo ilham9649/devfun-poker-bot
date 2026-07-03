@@ -209,10 +209,24 @@ def _build_prompt(hole_cards, board, pot, stack, call_amount, current_bet,
 - With draws: take free cards or call small bets; do not semi-bluff big (they don't fold).
 - Fold weak made hands to their big aggression — when a station raises, they have it."""
 
+    # Cash/playground rule block: deep stacks, rebuys allowed → NOT survival.
+    # Score is chips won, so play standard aggressive deep-stack poker.
+    cash_rules = """CASH-GAME / PLAYGROUND RULES (this is NOT a survival tournament):
+- Stacks are deep and rebuys are allowed. There is NO ICM, NO survival premium. Your goal is to WIN CHIPS, so play standard winning cash-game poker, not nitty fold-everything poker.
+- OPEN WIDE, especially in position: from the button/cutoff open any pair, any ace, any two broadway, any suited king, suited connectors down to 54s, and K9s/Q9s/J9s type hands. Folding the button with K9s or T8s is a LEAK.
+- Do not over-fold. A single raise in front is not a reason to fold a suited/connected/broadway hand in position — call or 3-bet.
+- 3-bet premiums for value AND mix in occasional light 3-bets in position vs late-position opens.
+- Value bet made hands across streets. C-bet most flops as the preflop raiser in position. Bet your draws for fold equity.
+- Still respect real strength: fold to heavy multi-street aggression without a strong hand; don't stack off 100BB+ with one pair on scary boards."""
+
     if game_mode == "eval":
         rules_block = eval_rules
         game_label = "a PVE POKER BENCHMARK against fixed house bots (reset-stack hands, scored in bb/100)"
         zone_line = f"STACK DEPTH: {bb_stack} BB — stacks reset every hand; play pure chip-EV maximization, no survival adjustments."
+    elif game_mode == "cash":
+        rules_block = cash_rules
+        game_label = "a deep-stacked CASH-GAME style arena (rebuys allowed, ranked by chips won)"
+        zone_line = f"STACK DEPTH: {bb_stack} BB — deep-stacked cash game; play wide, aggressive, positional poker (no survival/ICM)."
     else:
         rules_block = tournament_rules
         game_label = "an online POKER TOURNAMENT"

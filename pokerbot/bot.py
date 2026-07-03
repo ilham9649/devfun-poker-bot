@@ -23,6 +23,7 @@ COMPETITION_ID = os.environ.get("ARENA_COMPETITION_ID", "cmqf827h30u7dfca3x2aqvz
 
 # Game mode drives strategy framing and eval-only API fields.
 #   eval       — PVE benchmark: reset-stack hands, no rebuy, maximize bb/100
+#   cash       — deep-stacked playground (rebuys allowed): wide aggressive poker
 #   tournament — survival matters, ICM-aware
 # Override via ARENA_GAME_MODE; auto-detects eval competitions by ID.
 GAME_MODE = os.environ.get("ARENA_GAME_MODE") or (
@@ -325,8 +326,6 @@ def classify_board(board):
 
 # ── Hand State Tracker ──
 # Track per-hand state: did we raise preflop, previous street actions
-_hand_state = {}
-
 def reset_hand_state():
     global _hand_state
     _hand_state = {
@@ -337,8 +336,17 @@ def reset_hand_state():
         'raise_count_per_street': {},  # {'Preflop': 1, 'Flop': 2, ...}
     }
 
+# Initialize at import so the first bet/raise never hits a KeyError before the
+# first hand has completed (reset_hand_state only runs post-hand otherwise).
+_hand_state = {}
+reset_hand_state()
+
 def update_hand_state(action, equity=0, street=None):
     global _hand_state
+    # Defensive: never assume prior keys exist (a mid-run reset race or an
+    # uninitialized state must not crash the polling loop).
+    _hand_state.setdefault('raise_count_per_street', {})
+    _hand_state.setdefault('street', 'preflop')
     if street:
         _hand_state['prev_action'] = _hand_state.get('street_action', 'check')
         _hand_state['prev_equity'] = _hand_state.get('equity', 0)
