@@ -1,7 +1,9 @@
 """dev.fun Arena sandbox strategy — PvE exploit vs the reference panel.
 
 Entry point: act(table) -> {"action", "amount", "reasoning_text"}.
-Bundled with quant.py (pure-Python engine from the pokerbot package).
+SELF-CONTAINED: a single bare strategy.py (stdlib only) — the sandbox has no
+arena_sdk and submitting one file is the reliable path (a multi-file zip failed
+to start). The poker engine below is inlined verbatim from pokerbot/quant.py.
 
 The eval reference panel measures (~1M hands): VPIP 22 / PFR 17 / AF 2.0 /
 WTSD 93 / WSD 53. They fold ~78% preflop but almost never fold postflop.
@@ -11,13 +13,143 @@ amount semantics: TOTAL chips committed this street (to-amount), per
 allowedActions.amountSemantics == "to-amount". Clamp into bet/raiseRange.
 """
 
-from quant import (
-    evaluate_hand,
-    monte_carlo_equity,
-    preflop_hand_key,
-    card_rank,
-    estimate_draw_equity,
-)
+import random
+from collections import Counter
+
+# ── Inlined poker engine (self-contained; the sandbox has no arena_sdk and we
+#    ship a single bare strategy.py). Ported verbatim from pokerbot/quant.py. ──
+RANKS = "23456789TJQKA"
+RANK_VAL = {r: i for i, r in enumerate(RANKS, start=2)}
+_IDX_TO_RANK = {v: k for k, v in RANK_VAL.items()}
+
+
+def make_deck():
+    return [r + s for r in RANKS for s in "hdcs"]
+
+
+def card_rank(c):
+    return RANK_VAL.get(c[0], 0)
+
+
+def card_suit(c):
+    return c[1] if len(c) > 1 else "?"
+
+
+def evaluate_hand(hole, board):
+    """Numeric hand strength 0-8 + detail (higher is better)."""
+    all_cards = hole + board
+    if len(all_cards) < 5:
+        return (0, "incomplete", [])
+    ranks = [card_rank(c) for c in all_cards]
+    rank_counts = Counter(ranks)
+    suit_counts = Counter(card_suit(c) for c in all_cards)
+    flush_suit = None
+    for s, cnt in suit_counts.items():
+        if cnt >= 5:
+            flush_suit = s
+            break
+    flush_cards = sorted([r for c, r in zip(all_cards, ranks)
+                          if card_suit(c) == flush_suit and flush_suit],
+                         reverse=True) if flush_suit else []
+    unique_ranks = sorted(set(ranks))
+    straight_high = None
+    for i in range(len(unique_ranks) - 4):
+        if unique_ranks[i + 4] - unique_ranks[i] == 4:
+            straight_high = unique_ranks[i + 4]
+    if {14, 2, 3, 4, 5}.issubset(set(ranks)):
+        straight_high = 5
+    counts = sorted(rank_counts.values(), reverse=True)
+    if flush_suit and straight_high and straight_high in flush_cards[:5]:
+        return (8, "straight_flush", [straight_high])
+    if counts[0] == 4:
+        quads = [r for r, c in rank_counts.items() if c == 4][0]
+        return (7, "quads", [quads])
+    if counts[0] == 3 and counts[1] >= 2:
+        trips = [r for r, c in rank_counts.items() if c == 3][0]
+        pair = [r for r, c in rank_counts.items() if c >= 2 and r != trips][0]
+        return (6, "full_house", [trips, pair])
+    if flush_suit:
+        return (5, "flush", flush_cards[:5])
+    if straight_high:
+        return (4, "straight", [straight_high])
+    if counts[0] == 3:
+        trips = [r for r, c in rank_counts.items() if c == 3][0]
+        return (3, "trips", [trips])
+    if counts[0] == 2 and counts[1] == 2:
+        pairs = sorted([r for r, c in rank_counts.items() if c == 2], reverse=True)
+        return (2, "two_pair", pairs)
+    if counts[0] == 2:
+        pair = [r for r, c in rank_counts.items() if c == 2][0]
+        kickers = sorted([r for r, c in rank_counts.items() if c == 1], reverse=True)[:3]
+        return (1, "one_pair", [pair] + kickers)
+    return (0, "high_card", sorted(ranks, reverse=True)[:5])
+
+
+def preflop_hand_key(hole):
+    r1, r2 = sorted([card_rank(hole[0]), card_rank(hole[1])], reverse=True)
+    rc1, rc2 = _IDX_TO_RANK.get(r1, "?"), _IDX_TO_RANK.get(r2, "?")
+    if rc1 == rc2:
+        return rc1 + rc2
+    suited = card_suit(hole[0]) == card_suit(hole[1])
+    return rc1 + rc2 + ("s" if suited else "o")
+
+
+def compare_hands(strength_a, detail_a, strength_b, detail_b):
+    if strength_a != strength_b:
+        return 1 if strength_a > strength_b else -1
+    for da, db in zip(detail_a, detail_b):
+        if da != db:
+            return 1 if da > db else -1
+    return 0
+
+
+def monte_carlo_equity(hole, board, num_opponents=1, num_sims=500):
+    deck = make_deck()
+    known = set(hole + board)
+    remaining = [c for c in deck if c not in known]
+    wins = 0
+    for _ in range(num_sims):
+        sim_deck = remaining[:]
+        random.shuffle(sim_deck)
+        needed = 5 - len(board)
+        sim_board = board + sim_deck[:needed]
+        idx = needed
+        our = evaluate_hand(hole, sim_board)
+        win = True
+        for _ in range(num_opponents):
+            opp = [sim_deck[idx], sim_deck[idx + 1]]
+            idx += 2
+            oe = evaluate_hand(opp, sim_board)
+            if compare_hands(our[0], our[2], oe[0], oe[2]) < 0:
+                win = False
+                break
+        if win:
+            wins += 1
+    return wins / num_sims if num_sims else 0.0
+
+
+def estimate_draw_equity(hole, board, num_opponents=1):
+    if not board:
+        return 0
+    our_suit = card_suit(hole[0]) if hole else "?"
+    board_suits = [card_suit(c) for c in board]
+    flush_draw = board_suits.count(our_suit) == 3 and card_suit(hole[0]) == card_suit(hole[1])
+    our_ranks = sorted([card_rank(c) for c in hole], reverse=True)
+    board_ranks = sorted(set(card_rank(c) for c in board))
+    overcards = sum(1 for r in our_ranks if r > max(board_ranks, default=0))
+    all_r = sorted(set(our_ranks + board_ranks))
+    has_oesd = any(all_r[i + 3] - all_r[i] == 4 for i in range(len(all_r) - 3))
+    has_gutshot = any(all_r[i + 2] - all_r[i] == 5 for i in range(len(all_r) - 2))
+    cards_to_come = 5 - len(board)
+    draw_eq = 0.0
+    if flush_draw:
+        draw_eq += 0.20 * min(cards_to_come, 2) / 2
+    if has_oesd:
+        draw_eq += 0.17 * min(cards_to_come, 2) / 2
+    if has_gutshot:
+        draw_eq += 0.08 * min(cards_to_come, 2) / 2
+    draw_eq += overcards * 0.03 * cards_to_come
+    return min(draw_eq, 0.35)
 
 # Postflop Monte Carlo budget. The sandbox allows ~10s/decision; 400 sims of
 # pure-Python evaluation stays well under 2s even 5-handed.
