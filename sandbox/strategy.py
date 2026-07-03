@@ -281,19 +281,41 @@ def _preflop(table, hole):
 
 def _made_hand_value(hole, board, strength):
     """True if this is a clear value hand vs a calling station."""
-    if strength >= 2:  # two pair+
-        return True
-    if strength != 1:
-        return False
     board_ranks = [card_rank(c) for c in board]
     top_board = max(board_ranks) if board_ranks else 0
+    board_paired = len(set(board_ranks)) < len(board_ranks)
     h1, h2 = card_rank(hole[0]), card_rank(hole[1])
+    if strength >= 3:  # trips+
+        return True
+    if strength == 2:
+        # A paired board can inflate "two pair" — only genuine two pair
+        # (both hole cards working) or an overpair counts as value.
+        if not board_paired:
+            return True
+        if h1 == h2 and h1 > top_board:
+            return True                   # overpair + board pair
+        return (h1 in board_ranks and h2 >= 10) or (h2 in board_ranks and h1 >= 10)
+    if strength != 1:
+        return False
     if h1 == h2 and h1 > top_board:
         return True                       # overpair
     # top pair, decent kicker
     if h1 == top_board and h2 >= 10 or h2 == top_board and h1 >= 10:
         return True
     return False
+
+
+def _raise_worthy(hole, board, strength):
+    """Raise-for-value hands vs a station bet: genuine two pair or better."""
+    if strength >= 3:
+        return True
+    if strength != 2:
+        return False
+    board_ranks = [card_rank(c) for c in board]
+    if len(set(board_ranks)) < len(board_ranks):   # board itself is paired
+        h1, h2 = card_rank(hole[0]), card_rank(hole[1])
+        return h1 == h2 and h1 > max(board_ranks)  # overpair only
+    return True
 
 
 def _postflop(table, hole, board, street):
@@ -318,7 +340,7 @@ def _postflop(table, hole, board, street):
         return _check_or_fold(table, "checking, no bluffs vs stations")
 
     pot_odds = call_chips / float(pot + call_chips) if (pot + call_chips) else 1.0
-    if strength >= 2 and street != "River" and raises < 2:
+    if _raise_worthy(hole, board, strength) and street != "River" and raises < 2:
         return _raise_to(table, int(table.get("currentBet") or call_chips) * 3,
                          "raising two pair+ for value") or _call_or_check(table, "value call")
     if value:
