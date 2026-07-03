@@ -208,6 +208,16 @@ def _check_or_fold(table, why):
 
 # ── streets ──────────────────────────────────────────────
 
+def _hu_playable(hole, defending=False):
+    """Heads-up ranges are wide: open most buttons, defend the BB liberally."""
+    hi, lo, suited, pair = _parse_key(hole)
+    if pair or hi >= 13 or suited:
+        return True
+    if defending:
+        return hi >= 10 and lo >= 7 or hi >= 12 and lo >= 5
+    return hi >= 11 or (hi >= 9 and hi - lo <= 2)
+
+
 def _preflop(table, hole):
     aa = table.get("allowedActions") or {}
     call_chips = int(aa.get("callChips") or 0)
@@ -217,6 +227,24 @@ def _preflop(table, hole):
     pos = _position(table)
     raises = _street_raises(table, "Preflop")
     facing_raise = call_chips > 0 and int(table.get("currentBet") or 0) > bb
+    heads_up = _active_opponents(table) == 1
+
+    if heads_up and not _is_value_3bet(hole):
+        if facing_raise:
+            if _is_3bet_defend(hole) or (
+                    call_chips <= bb * 3 and _hu_playable(hole, defending=True)):
+                return _call_or_check(table, "HU defend")
+            return {"action": "fold", "reasoning_text": "HU fold vs raise"}
+        if _hu_playable(hole):
+            act_ = _raise_to(table, bb * 3, "HU open")
+            if act_:
+                return act_
+            return _call_or_check(table, "HU limp behind")
+        if call_chips == 0:
+            return _call_or_check(table, "HU free look")
+        if call_chips <= bb and _hu_playable(hole, defending=True):
+            return _call_or_check(table, "HU cheap complete")
+        return {"action": "fold", "reasoning_text": "HU out of range"}
 
     if _is_value_3bet(hole):
         # Big for value — the panel calls 3-bets too wide.
