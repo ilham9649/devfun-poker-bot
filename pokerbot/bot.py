@@ -221,6 +221,43 @@ def get_opponent_style(agent_id):
     except Exception:
         return "unknown"
 
+def format_public_opponent_stats(table):
+    """Career stats for each seated opponent, straight from the arena's public
+    agent-stats API (a large cross-game sample), formatted for the Gemini prompt.
+    This is the opponent's PUBLIC PROFILE — available from the first hand and far
+    larger than our own live observations. Returns '' if nothing is known."""
+    self_seat = table.get("selfSeatNumber")
+    lines = []
+    for seat in table.get("seats", []):
+        if seat.get("seatNumber") == self_seat:
+            continue
+        if seat.get("status") not in ("Active", "AllIn"):
+            continue
+        aid = seat.get("agentId", "")
+        if not aid:
+            continue
+        try:
+            st = (fetch_opponent_stats(aid).get("stats") or {})
+        except Exception:
+            st = {}
+        n = st.get("sampleSize") or 0
+        if not st or not n:
+            continue
+        name = seat.get("agentName") or aid[:8]
+        ps = st.get("playingStyle") or {}
+        label = ps.get("label", "?")
+        tag = ps.get("tagline", "")
+        vpip = (st.get("vpip") or 0) * 100
+        pfr = (st.get("pfr") or 0) * 100
+        af = st.get("af") or st.get("aggressionFactor") or 0
+        wtsd = (st.get("wtsd") or 0) * 100
+        bluff = (st.get("bluffPct") or 0) * 100
+        lines.append(
+            f"{name}: {label}{(' — ' + tag) if tag else ''} | "
+            f"VPIP {vpip:.0f}% PFR {pfr:.0f}% AF {af:.1f} WTSD {wtsd:.0f}% "
+            f"bluff {bluff:.0f}% (career sample {n} hands)")
+    return "\n".join(lines)
+
 # ── Strategy Engine ─────────────────────────────────────
 # Import quantitative poker engine
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -759,11 +796,16 @@ def decide_action(table):
         else:
             return ('fold', 0, f"raise cap hit ({street_raise_count} raises on {street}), folding to further aggression")
 
+    # Opponent PUBLIC profiles (arena career stats) — large sample, available
+    # from hand one. Merged with our own live reads in the Gemini prompt.
+    public_stats_text = format_public_opponent_stats(table)
+
     # Try Gemini + profiler first, fallback to quant_decision
     action, amount, msg, extra = decide_with_profiling(
         hole_cards, board, available, pot, stack,
         call_amount, current_bet, num_opp, street,
-        pos, table, profiler, bb_size=bb_size, game_mode=GAME_MODE
+        pos, table, profiler, bb_size=bb_size, game_mode=GAME_MODE,
+        public_stats_text=public_stats_text
     )
     
     return (action, amount, msg)

@@ -253,8 +253,9 @@ CURRENT SITUATION:
 
 AVAILABLE ACTIONS: {allowed_str}
 
-OPPONENT PROFILES (from real-time observation):
+OPPONENT PROFILES (career stats + live reads — EXPLOIT these):
 {opponent_profiles_text}
+How to exploit: vs tight/nit/rock players (low VPIP/PFR) steal their blinds relentlessly and fold when THEY show aggression (they only bet strong). vs loose/station players (high VPIP, high WTSD) value-bet thin and NEVER bluff. vs maniacs/LAGs (high AF/bluff%) call down lighter and trap. If a profile shows a low sample or "no data", lean on general strategy.
 
 {rules_block}
 
@@ -405,7 +406,8 @@ Return ONLY valid JSON (no markdown, no extra text):
 def decide_with_profiling(hole_cards, board, allowed_actions, pot, stack,
                           call_amount, current_bet, num_opponents, street,
                           position, table_state, profiler: Profiler,
-                          bb_size=2, game_mode="tournament") -> tuple:
+                          bb_size=2, game_mode="tournament",
+                          public_stats_text="") -> tuple:
     """
     Main decision function. Uses Gemini + profiler, falls back to quant_decision.
     
@@ -424,7 +426,18 @@ def decide_with_profiling(hole_cards, board, allowed_actions, pot, stack,
             opponent_ids.append(aid)
     
     opponent_text = profiler.get_table_profiles(seats, our_agent_id)
-    
+
+    # Merge the arena PUBLIC career profiles (large sample) with our own live
+    # reads. Public stats lead — they're available from hand one and are a much
+    # bigger sample than our few observations.
+    if public_stats_text:
+        opponent_text = (
+            "PUBLIC ARENA PROFILES (career stats — large sample):\n"
+            f"{public_stats_text}\n\n"
+            "OUR LIVE READS (this session):\n"
+            f"{opponent_text}"
+        )
+
     # Try Gemini
     if len(opponent_ids) > 0 or True:  # Always try Gemini if we can
         action, amount, reasoning, confidence = gemini_decision(
