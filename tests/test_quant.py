@@ -371,17 +371,22 @@ test("76s bluff from BTN", is_bluff_3bet_hand(['7h', '6h'], 3))
 test("76s NOT bluff from UTG", not is_bluff_3bet_hand(['7h', '6h'], 0))
 test("72o NOT bluff", not is_bluff_3bet_hand(['7h', '2d'], 3))
 
-# 4-bet stack-off hands
+# 4-bet stack-off hands. Range was deliberately widened (PR #12) to include
+# QQ/JJ — stacking off these premiums avoids folding too much to 4/5-bet
+# aggression. Tests track that intended behavior.
 test("KK stack off", is_4bet_stack_off_hand(['Kh', 'Ks']))
 test("AA stack off", is_4bet_stack_off_hand(['Ah', 'As']))
 test("AKs stack off", is_4bet_stack_off_hand(['Ah', 'Ks']))
-test("QQ NOT stack off", not is_4bet_stack_off_hand(['Qh', 'Qs']))
-test("JJ NOT stack off", not is_4bet_stack_off_hand(['Jh', 'Js']))
+test("QQ stack off", is_4bet_stack_off_hand(['Qh', 'Qs']))
+test("JJ stack off", is_4bet_stack_off_hand(['Jh', 'Js']))
+test("TT NOT stack off", not is_4bet_stack_off_hand(['Th', 'Ts']))
 
-# Should fold to 5-bet
-test("QQ fold to 5-bet", should_fold_to_5bet(['Qh', 'Qs']))
-test("JJ fold to 5-bet", should_fold_to_5bet(['Jh', 'Js']))
-test("AKo fold to 5-bet", should_fold_to_5bet(['Ah', 'Kd']))
+# Fold to 5-bet: only TT- / weak suited aces fold; QQ+/JJ/AK get it in.
+test("TT fold to 5-bet", should_fold_to_5bet(['Th', 'Ts']))
+test("AQo fold to 5-bet", should_fold_to_5bet(['Ah', 'Qd']))
+test("QQ NOT fold to 5-bet", not should_fold_to_5bet(['Qh', 'Qs']))
+test("JJ NOT fold to 5-bet", not should_fold_to_5bet(['Jh', 'Js']))
+test("AKo NOT fold to 5-bet", not should_fold_to_5bet(['Ah', 'Kd']))
 test("AA NOT fold to 5-bet", not should_fold_to_5bet(['Ah', 'As']))
 test("KK NOT fold to 5-bet", not should_fold_to_5bet(['Kh', 'Ks']))
 
