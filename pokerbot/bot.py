@@ -367,6 +367,40 @@ def get_street_raise_count(street):
 
 MAX_RAISES_PER_STREET = 2  # Cap raises per street to prevent infinite raise wars
 
+# ── Per-TABLE raise counter ──
+# _hand_state is a single global machine, but the bot plays many tables at once.
+# When any OTHER table's hand completes, reset_hand_state() wipes _hand_state —
+# so the global raise counter is useless for the raise cap (observed: a 5-bet
+# raise war with A8s that then folded, because other tables kept resetting the
+# count). Track raises per (tableId, street) instead, immune to other tables.
+_our_raises_by_table = {}  # {tableId: {'_hand': hand_key, street: count}}
+
+def _table_entry(table_id, hand_key):
+    """Get the per-table raise record, auto-resetting when the hand changes.
+
+    hand_key is the table's per-hand `startedAt` timestamp — it changes every
+    new hand, so counts can't leak across hands even when we fold preflop and
+    never see the hand's completion (the completion handler wouldn't fire)."""
+    entry = _our_raises_by_table.get(table_id)
+    if entry is None or (hand_key is not None and entry.get('_hand') != hand_key):
+        entry = {'_hand': hand_key}
+        _our_raises_by_table[table_id] = entry
+    return entry
+
+def record_our_raise(table_id, street, hand_key=None):
+    if not table_id:
+        return
+    entry = _table_entry(table_id, hand_key)
+    entry[street] = entry.get(street, 0) + 1
+
+def our_table_raise_count(table_id, street, hand_key=None):
+    if not table_id:
+        return 0
+    return _table_entry(table_id, hand_key).get(street, 0)
+
+def clear_table_raises(table_id):
+    _our_raises_by_table.pop(table_id, None)
+
 def get_hand_state():
     return _hand_state
 
@@ -707,22 +741,23 @@ def decide_action(table):
     # Dynamic blind size from table (tournament may use 5/10, not 1/2)
     bb_size = table.get('bigBlindChips') or 2
 
-    # ── Raise cap: prevent infinite raise wars ──
-    try:
-        from pokerbot.bot import get_street_raise_count, MAX_RAISES_PER_STREET
-        street_raise_count = get_street_raise_count(street)
-    except ImportError:
-        street_raise_count = 0
-    if street_raise_count >= 2:  # MAX_RAISES_PER_STREET
-        # We've already raised twice on this street — force fold or call
-        if 'call' in available and call_amount > 0:
-            call_msg = f"raise cap hit ({street_raise_count}/{MAX_RAISES_PER_STREET} on {street}), calling instead"
+    # ── Raise cap: prevent infinite raise wars (PER TABLE) ──
+    table_id = table.get("tableId")
+    hand_key = table.get("startedAt")
+    street_raise_count = our_table_raise_count(table_id, street, hand_key)
+    if street_raise_count >= MAX_RAISES_PER_STREET:
+        # We've already raised MAX times on this street at THIS table — do not
+        # escalate. Call if the price is sane, else check/fold. Never pour more
+        # in only to fold to the next re-raise.
+        call_ok = call_amount > 0 and call_amount <= stack and call_amount <= pot
+        if 'call' in available and call_ok:
+            call_msg = f"raise cap hit ({street_raise_count} raises on {street}), calling instead of re-raising"
             log(f"   ⚠️ {call_msg}")
             return ('call', call_amount, call_msg)
         elif 'check' in available:
-            return ('check', 0, f"raise cap hit ({street_raise_count}/{MAX_RAISES_PER_STREET} on {street}), checking")
+            return ('check', 0, f"raise cap hit ({street_raise_count} raises on {street}), checking")
         else:
-            return ('fold', 0, f"raise cap hit ({street_raise_count}/{MAX_RAISES_PER_STREET} on {street}), folding")
+            return ('fold', 0, f"raise cap hit ({street_raise_count} raises on {street}), folding to further aggression")
 
     # Try Gemini + profiler first, fallback to quant_decision
     action, amount, msg, extra = decide_with_profiling(
@@ -905,9 +940,12 @@ def main_loop():
                         action, amt, msg = ("fold", 0, f"engine error ({type(e).__name__}), safe fold")
                     log(f"   ⚠️ decide_action crashed: {e!r} — {action} instead")
                 
-                # Track raise count per street for raise cap
+                # Track raise count per street for raise cap. Count per-TABLE
+                # (immune to other tables' hand-end resets) AND in the global
+                # _hand_state (still used by the quant path).
                 if action in ('bet', 'raise'):
                     update_hand_state(action, street=street)
+                    record_our_raise(table_id, street, table.get("startedAt"))
                 
                 # Public chat: only send safe, randomized messages (never Gemini reasoning)
                 # Gemini reasoning may contain hole cards or strategy thinking — keep it in logs only
@@ -1010,7 +1048,9 @@ def main_loop():
                     # Drop the per-table snapshot so the next hand starts clean
                     # (its first snapshot then has no predecessor → blinds aren't diffed).
                     _last_table_snapshot.pop(table_id, None)
-                    
+                    # Clear this table's raise counter for the next hand.
+                    clear_table_raises(table_id)
+
                     # Reset hand state at end of hand
                     reset_hand_state()
                     

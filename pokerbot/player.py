@@ -217,7 +217,8 @@ def _build_prompt(hole_cards, board, pot, stack, call_amount, current_bet,
 - Do not over-fold. A single raise in front is not a reason to fold a suited/connected/broadway hand in position — call or 3-bet.
 - 3-bet premiums for value AND mix in occasional light 3-bets in position vs late-position opens.
 - Value bet made hands across streets. C-bet most flops as the preflop raiser in position. Bet your draws for fold equity.
-- Still respect real strength: fold to heavy multi-street aggression without a strong hand; don't stack off 100BB+ with one pair on scary boards."""
+- Still respect real strength: fold to heavy multi-street aggression without a strong hand; don't stack off 100BB+ with one pair on scary boards.
+- CRITICAL — NO RAISE WARS: A8s, KQ, KJ, ATs, small pairs etc. are NOT premiums. If you have already raised once this street and face a RE-RAISE (a 4-bet+), only continue with QQ+/AK — either just CALL, or FOLD. NEVER keep re-raising a non-premium hand. Raising big and then folding to the next raise is the worst possible line — it burns chips for nothing. Only AA/KK/QQ/AK should ever be 4-bet or 5-bet."""
 
     if game_mode == "eval":
         rules_block = eval_rules
