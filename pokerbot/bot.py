@@ -1055,11 +1055,23 @@ def main_loop():
             
             # "available" = has chips, not seated. "unknown" = never joined
             # this competition (participant is null) — join covers both.
-            if not joined and chip_state in ("available", "unknown"):
+            #
+            # Drive rejoin off ACTUAL state, not a sticky `joined` flag: once the
+            # bot's tables all complete (activeTableCount → 0) it is idle with
+            # chips but not seated, and a sticky flag would leave it stuck there
+            # forever (observed: idle 1h after winning up to 1441 chips). Rejoin
+            # whenever we hold chips and are seated at zero tables — the lobby
+            # check below prevents spamming join while already queued.
+            active_count = (runner or {}).get("activeTableCount", 0) or 0
+            if chip_state in ("available", "unknown") and active_count == 0:
                 # Check lobby first (benchmark/eval competitions have none)
                 lobby = {} if GAME_MODE == "eval" else get(f"/api/arena/texas/lobby", {"competitionId": COMPETITION_ID})
-                if lobby.get("_error") or lobby.get("lobby") is None:
-                    log("Joining queue...")
+                in_lobby = (not lobby.get("_error")) and lobby.get("lobby") is not None
+                if not in_lobby:
+                    if joined:
+                        log("Tables finished, still have chips — re-queuing...")
+                    else:
+                        log("Joining queue...")
                     join_resp = join_competition()
                     if join_resp.get("_error"):
                         log(f"Join refused: {join_resp.get('_body','?')}")
