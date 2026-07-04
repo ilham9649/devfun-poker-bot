@@ -6,8 +6,11 @@ arena_sdk and submitting one file is the reliable path (a multi-file zip failed
 to start). The poker engine below is inlined verbatim from pokerbot/quant.py.
 
 The eval reference panel measures (~1M hands): VPIP 22 / PFR 17 / AF 2.0 /
-WTSD 93 / WSD 53. They fold ~78% preflop but almost never fold postflop.
-Exploit: steal wide preflop, value-bet relentlessly, never bluff postflop.
+WTSD 93 / WSD 53 / bluff 18%. They fold ~78% preflop but almost never fold
+postflop. Exploit: open ATC from late/SB (steal the 78%), value-bet BIG and
+thin (they're price-inelastic), barrel three streets, never bluff, and don't
+over-fold to their bets (they bluff ~18%). Baseline: fold-bot = -23.9 bb/100;
+v1 of this strategy = +35.8 bb/100.
 
 amount semantics: TOTAL chips committed this street (to-amount), per
 allowedActions.amountSemantics == "to-amount". Clamp into bet/raiseRange.
@@ -243,34 +246,31 @@ def _parse_key(hole):
 
 
 def _open_ok(hole, pos):
+    # The panel folds ~78% preflop, so open-steals print money. Open ATC from
+    # late/SB, and a very wide range everywhere else. Only genuine trash opens
+    # are trimmed from early position.
     hi, lo, suited, pair = _parse_key(hole)
     gap = hi - lo
     if pair:
-        return lo >= 5 if pos == "early" else True
+        return True                               # open every pair
     if pos in ("late", "sb"):
-        if hi == 14:
-            return True                       # any ace
-        if hi == 13:
-            return suited or lo >= 9          # K5s+? -> any Ks, K9o+
-        if hi == 12:
-            return (suited and lo >= 7) or lo >= 10
-        if suited and gap <= 2 and lo >= 5:
-            return True                       # 75s+, T8s+ style
-        return suited and lo >= 8 or (not suited and hi >= 11 and lo >= 10)
+        return True                               # any two — max steal pressure
     if pos == "middle":
-        if hi == 14:
-            return suited or lo >= 9
-        if hi == 13:
-            return (suited and lo >= 9) or lo >= 10
-        if hi == 12:
-            return (suited and lo >= 9) or lo == 11
-        return (suited and gap <= 1 and lo >= 8)  # JTs, T9s, 98s
+        if hi >= 12:
+            return True                           # any ace/king/queen
+        if hi == 11:
+            return suited or lo >= 7              # J7o+, any Jxs
+        if suited:
+            return lo >= 5 or gap <= 2            # suited connectors/gappers
+        return hi >= 10 and lo >= 8               # T8o+, decent offsuit
     # early
-    if hi == 14:
-        return (suited and lo >= 9) or lo >= 10
-    if hi == 13 and (suited and lo >= 10 or lo >= 11):
-        return True
-    return hi == 12 and suited and lo >= 10       # QTs+
+    if hi >= 13:
+        return True                               # any ace or king
+    if hi == 12:
+        return suited or lo >= 9                  # Qxs, Q9o+
+    if hi == 11:
+        return suited or lo >= 10                 # Jxs, JTo
+    return suited and gap <= 1 and lo >= 7        # T9s, 98s, 87s
 
 
 def _call_raise_ok(hole, call_chips, stack):
@@ -450,6 +450,16 @@ def _raise_worthy(hole, board, strength):
     return True
 
 
+def _any_pair_plus(hole, board, strength):
+    """Any made pair or better (thin-value candidate on the flop)."""
+    if strength >= 2:
+        return True
+    if strength == 1:
+        return True
+    # pocket pair below board is still a pair
+    return card_rank(hole[0]) == card_rank(hole[1])
+
+
 def _postflop(table, hole, board, street):
     aa = table.get("allowedActions") or {}
     call_chips = int(aa.get("callChips") or 0)
@@ -459,14 +469,18 @@ def _postflop(table, hole, board, street):
     value = _made_hand_value(hole, board, strength)
     eq = monte_carlo_equity(hole, board, n_opp, num_sims=MC_SIMS)
     raises = _street_raises(table, street)
+    draw_eq = estimate_draw_equity(hole, board, n_opp)
 
     if call_chips == 0:
         if value:
-            # Stations pay three streets — bet big.
-            return _raise_to(table, int(pot * 0.75) or 1,
-                             "value bet vs station") or _check_or_fold(table, "no bet size")
-        if strength == 1 and street == "Flop" and eq > 0.45:
-            return _raise_to(table, int(pot * 0.5) or 1,
+            # Stations are price-inelastic — size UP. Overbet-ish the flop/turn
+            # with strong hands and keep barreling; they pay three streets.
+            frac = 1.0 if street in ("Flop", "Turn") else 0.85
+            return _raise_to(table, int(pot * frac) or 1,
+                             "big value bet vs station") or _check_or_fold(table, "no bet size")
+        if street == "Flop" and _any_pair_plus(hole, board, strength) and eq > 0.42:
+            # Thin value + protection on the flop with any pair.
+            return _raise_to(table, int(pot * 0.6) or 1,
                              "thin flop value") or _check_or_fold(table, "no bet size")
         # No bluffs vs a 93%-WTSD panel; draws take free cards.
         return _check_or_fold(table, "checking, no bluffs vs stations")
@@ -477,8 +491,12 @@ def _postflop(table, hole, board, street):
                          "raising two pair+ for value") or _call_or_check(table, "value call")
     if value:
         return _call_or_check(table, "value hand, calling")
-    draw_eq = estimate_draw_equity(hole, board, n_opp)
-    if eq > pot_odds + 0.04 or (street != "River" and draw_eq >= 0.16 and pot_odds <= 0.30):
+    # They bluff ~18% of bets, so don't over-fold: call a single small/medium
+    # bet with any pair or a live draw. Fold only weak holdings to big pressure.
+    small_bet = pot_odds <= 0.42
+    if strength == 1 and small_bet:
+        return _call_or_check(table, "pair vs a station bet (they bluff often)")
+    if eq > pot_odds + 0.03 or (street != "River" and draw_eq >= 0.16 and pot_odds <= 0.33):
         return _call_or_check(table, "odds justify the call")
     return {"action": "fold", "reasoning_text": "beat, folding to station aggression"}
 
