@@ -16,7 +16,6 @@ amount semantics: TOTAL chips committed this street (to-amount), per
 allowedActions.amountSemantics == "to-amount". Clamp into bet/raiseRange.
 """
 
-import random
 from collections import Counter
 
 # ── Inlined poker engine (self-contained; the sandbox has no arena_sdk and we
@@ -24,10 +23,6 @@ from collections import Counter
 RANKS = "23456789TJQKA"
 RANK_VAL = {r: i for i, r in enumerate(RANKS, start=2)}
 _IDX_TO_RANK = {v: k for k, v in RANK_VAL.items()}
-
-
-def make_deck():
-    return [r + s for r in RANKS for s in "hdcs"]
 
 
 def card_rank(c):
@@ -97,46 +92,12 @@ def preflop_hand_key(hole):
     return rc1 + rc2 + ("s" if suited else "o")
 
 
-def compare_hands(strength_a, detail_a, strength_b, detail_b):
-    if strength_a != strength_b:
-        return 1 if strength_a > strength_b else -1
-    for da, db in zip(detail_a, detail_b):
-        if da != db:
-            return 1 if da > db else -1
-    return 0
-
-
-def monte_carlo_equity(hole, board, num_opponents=1, num_sims=500):
-    deck = make_deck()
-    known = set(hole + board)
-    remaining = [c for c in deck if c not in known]
-    wins = 0
-    for _ in range(num_sims):
-        sim_deck = remaining[:]
-        random.shuffle(sim_deck)
-        needed = 5 - len(board)
-        sim_board = board + sim_deck[:needed]
-        idx = needed
-        our = evaluate_hand(hole, sim_board)
-        win = True
-        for _ in range(num_opponents):
-            opp = [sim_deck[idx], sim_deck[idx + 1]]
-            idx += 2
-            oe = evaluate_hand(opp, sim_board)
-            if compare_hands(our[0], our[2], oe[0], oe[2]) < 0:
-                win = False
-                break
-        if win:
-            wins += 1
-    return wins / num_sims if num_sims else 0.0
-
-
 def estimate_draw_equity(hole, board, num_opponents=1):
     if not board:
         return 0
-    our_suit = card_suit(hole[0]) if hole else "?"
-    board_suits = [card_suit(c) for c in board]
-    flush_draw = board_suits.count(our_suit) == 3 and card_suit(hole[0]) == card_suit(hole[1])
+    # Flush draw = exactly 4 cards of one suit across hole+board (drawing to 5).
+    suit_counts = Counter(card_suit(c) for c in hole + board)
+    flush_draw = any(v == 4 for v in suit_counts.values())
     our_ranks = sorted([card_rank(c) for c in hole], reverse=True)
     board_ranks = sorted(set(card_rank(c) for c in board))
     overcards = sum(1 for r in our_ranks if r > max(board_ranks, default=0))
@@ -153,10 +114,6 @@ def estimate_draw_equity(hole, board, num_opponents=1):
         draw_eq += 0.08 * min(cards_to_come, 2) / 2
     draw_eq += overcards * 0.03 * cards_to_come
     return min(draw_eq, 0.35)
-
-# Postflop Monte Carlo budget. The sandbox allows ~10s/decision; 400 sims of
-# pure-Python evaluation stays well under 2s even 5-handed.
-MC_SIMS = 400
 
 
 # ── table reading ────────────────────────────────────────
@@ -461,24 +418,26 @@ def _any_pair_plus(hole, board, strength):
 
 
 def _postflop(table, hole, board, street):
+    # No Monte Carlo here: against a never-folding panel we decide off made-hand
+    # strength (cheap) + a cheap draw count. A 400-sim MC per spot × 5 opponents
+    # was slow enough to time the eval out at 134/500 hands.
     aa = table.get("allowedActions") or {}
     call_chips = int(aa.get("callChips") or 0)
     pot = int(table.get("potChips") or 0)
     n_opp = _active_opponents(table)
     strength, hand_type, _detail = evaluate_hand(hole, board)
     value = _made_hand_value(hole, board, strength)
-    eq = monte_carlo_equity(hole, board, n_opp, num_sims=MC_SIMS)
     raises = _street_raises(table, street)
     draw_eq = estimate_draw_equity(hole, board, n_opp)
 
     if call_chips == 0:
         if value:
-            # Stations are price-inelastic — size UP. Overbet-ish the flop/turn
-            # with strong hands and keep barreling; they pay three streets.
+            # Stations are price-inelastic — size UP. Pot-sized on flop/turn with
+            # strong hands and keep barreling; they pay three streets.
             frac = 1.0 if street in ("Flop", "Turn") else 0.85
             return _raise_to(table, int(pot * frac) or 1,
                              "big value bet vs station") or _check_or_fold(table, "no bet size")
-        if street == "Flop" and _any_pair_plus(hole, board, strength) and eq > 0.42:
+        if street == "Flop" and _any_pair_plus(hole, board, strength):
             # Thin value + protection on the flop with any pair.
             return _raise_to(table, int(pot * 0.6) or 1,
                              "thin flop value") or _check_or_fold(table, "no bet size")
@@ -496,8 +455,8 @@ def _postflop(table, hole, board, street):
     small_bet = pot_odds <= 0.42
     if strength == 1 and small_bet:
         return _call_or_check(table, "pair vs a station bet (they bluff often)")
-    if eq > pot_odds + 0.03 or (street != "River" and draw_eq >= 0.16 and pot_odds <= 0.33):
-        return _call_or_check(table, "odds justify the call")
+    if street != "River" and draw_eq >= 0.16 and pot_odds <= 0.33:
+        return _call_or_check(table, "drawing with the right price")
     return {"action": "fold", "reasoning_text": "beat, folding to station aggression"}
 
 
