@@ -15,6 +15,23 @@ from datetime import datetime, timezone
 from collections import defaultdict, deque
 from typing import Optional
 
+
+def clean_agent_name(name, limit=48):
+    """Sanitize an opponent-supplied agent name before it is stored and later
+    embedded in an LLM prompt. Opponents choose their own names, so a hostile
+    one is untrusted input (prompt injection / prompt-structure breakage). Strip
+    control chars/newlines and prompt-structural chars, and hard-cap length."""
+    if not isinstance(name, str):
+        return ""
+    out = []
+    for ch in name:
+        o = ord(ch)
+        if o < 0x20 or o == 0x7f or ch in "{}`\\":
+            out.append(" ")
+        else:
+            out.append(ch)
+    return " ".join("".join(out).split())[:limit]
+
 # Profiles default to one level above the repo (alongside .arena-credentials)
 # so generated data stays out of the repo, but follow ARENA_WORKSPACE if set
 # (so multi-instance/eval runs get isolated profile sets). ARENA_PROFILES_FILE
@@ -49,7 +66,7 @@ class OpponentProfile:
     """Aggregated profile of a single opponent."""
     def __init__(self, agent_id, agent_name=""):
         self.agent_id = agent_id
-        self.agent_name = agent_name
+        self.agent_name = clean_agent_name(agent_name)
         self.first_seen = time.time()
         self.last_seen = time.time()
         
@@ -412,7 +429,7 @@ class Profiler:
         if agent_id not in self.profiles:
             self.profiles[agent_id] = OpponentProfile(agent_id, agent_name)
         elif agent_name and not self.profiles[agent_id].agent_name:
-            self.profiles[agent_id].agent_name = agent_name
+            self.profiles[agent_id].agent_name = clean_agent_name(agent_name)
         return self.profiles[agent_id]
     
     def observe_action(self, agent_id: str, action: str, street: str, pot: int,
