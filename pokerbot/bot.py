@@ -106,6 +106,11 @@ POLL_INTERVAL = 1.5  # seconds between polls when idle
 API_COOLDOWN = 0.8  # minimum seconds between API calls
 last_api_call = 0
 
+# Auto-rebuy cap. The server allows many rebuys; this is our own bankroll-
+# discipline limit so a losing session can't donate indefinitely. Override
+# via ARENA_MAX_REBUYS.
+MAX_REBUYS = int(os.environ.get("ARENA_MAX_REBUYS", "5"))
+
 # ── Helpers ──────────────────────────────────────────────
 
 def rate_limit():
@@ -914,7 +919,7 @@ def join_competition():
 
 def main_loop():
     log("=== OpenClaw Poker Bot Started ===")
-    log(f"Competition: {COMPETITION_ID} | Bankroll: 1000 chips | Max rebuys: 5")
+    log(f"Competition: {COMPETITION_ID} | Bankroll: 1000 chips | Max rebuys: {MAX_REBUYS}")
     
     state = load_state()
     joined = False  # track if we've joined this session
@@ -1130,7 +1135,7 @@ def main_loop():
                 buy_in = participant.get("initialChips", 1000)  # fallback
                 if total < buy_in:
                     rebuy_count = participant.get("rebuyCount", 0)
-                    if rebuy_count < 5:
+                    if rebuy_count < MAX_REBUYS:
                         log(f"Busted ({total} chips). Rebuy #{rebuy_count + 1}...")
                         rebuy = post("/api/arena/texas/rebuy", {"competitionId": COMPETITION_ID})
                         if not rebuy.get("_error"):
